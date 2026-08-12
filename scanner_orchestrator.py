@@ -179,7 +179,7 @@ def run_scanner(
 
         result = run_scanner_v4(
             supabase=supabase,
-            headless=False,
+            headless=True,
         )
 
         latest_control = get_scanner_control()
