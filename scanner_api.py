@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import Client, create_client
 
@@ -21,6 +21,7 @@ ORCHESTRATOR_FILE = BASE_DIR / "scanner_orchestrator.py"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SCANNER_API_KEY = os.getenv("SCANNER_API_KEY")
 
 if not SUPABASE_URL:
     raise RuntimeError("SUPABASE_URL is missing from the .env file.")
@@ -127,7 +128,16 @@ def launch_scanner_process() -> None:
         ),
     )
 
+def verify_api_key(x_api_key: str = Header(None)) -> None:
+    """
+    Verifies that the request contains the correct API key.
+    """
 
+    if x_api_key != SCANNER_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key.",
+        )
 # ---------------------------------------------------------
 # Routes
 # ---------------------------------------------------------
@@ -152,7 +162,8 @@ def scanner_status():
 
 
 @app.post("/scanner/run")
-def run_scanner():
+def run_scanner(x_api_key: str = Header(None)):
+    verify_api_key(x_api_key)
     control = get_scanner_control()
 
     if not control.get("enabled", False):
@@ -176,7 +187,8 @@ def run_scanner():
 
 
 @app.post("/scanner/pause")
-def pause_scanner():
+def pause_scanner(x_api_key: str = Header(None)):
+    verify_api_key(x_api_key)
     control = get_scanner_control()
 
     current_status = control.get("status")
@@ -209,7 +221,8 @@ def pause_scanner():
 
 
 @app.post("/scanner/resume")
-def resume_scanner():
+def resume_scanner(x_api_key: str = Header(None)):
+    verify_api_key(x_api_key)
     control = get_scanner_control()
 
     if control.get("status") == "running":
