@@ -18,9 +18,15 @@ def run_scanner_v4(
     properties = load_live_properties(supabase)
 
     total_properties = len(properties)
+
     processed = 0
     failed = 0
     events_created = 0
+
+    new_listings = 0
+    price_reductions = 0
+    relisted_properties = 0
+    off_market_properties = 0
 
     print("")
     print("Scanner V4 starting.")
@@ -75,6 +81,23 @@ def run_scanner_v4(
 
                             if event_created:
                                 events_created += 1
+
+                                event_type = change.get(
+                                    "event_type"
+                                )
+
+                                if event_type == "NEW_LISTING":
+                                    new_listings += 1
+
+                                elif event_type == "PRICE_REDUCED":
+                                    price_reductions += 1
+
+                                elif event_type == "RELISTED":
+                                    relisted_properties += 1
+
+                                elif event_type == "OFF_MARKET":
+                                    off_market_properties += 1
+
                     else:
                         print("No changes detected.")
 
@@ -108,6 +131,10 @@ def run_scanner_v4(
         "processed": processed,
         "failed": failed,
         "events_created": events_created,
+        "new_listings": new_listings,
+        "price_reductions": price_reductions,
+        "relisted_properties": relisted_properties,
+        "off_market_properties": off_market_properties,
     }
 
     print("")
@@ -116,6 +143,10 @@ def run_scanner_v4(
     print(f"Processed successfully: {processed}")
     print(f"Failed: {failed}")
     print(f"Events created: {events_created}")
+    print(f"New listings: {new_listings}")
+    print(f"Price reductions: {price_reductions}")
+    print(f"Relisted properties: {relisted_properties}")
+    print(f"Off market properties: {off_market_properties}")
 
     return result
 

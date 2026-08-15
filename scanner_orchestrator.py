@@ -41,10 +41,6 @@ supabase: Client = create_client(
 # ---------------------------------------------------------
 
 def utc_now_iso() -> str:
-    """
-    Return the current UTC time as an ISO formatted string.
-    """
-
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -53,13 +49,6 @@ def utc_now_iso() -> str:
 # ---------------------------------------------------------
 
 def get_scanner_control() -> dict:
-    """
-    Retrieve the scanner control record.
-
-    For the current BM Estates version of Nyro there is
-    one scanner_control row.
-    """
-
     response = (
         supabase
         .table("scanner_control")
@@ -80,10 +69,6 @@ def update_scanner_control(
     control_id: str,
     values: dict,
 ) -> None:
-    """
-    Update scanner_control with the supplied values.
-    """
-
     update_values = dict(values)
     update_values["updated_at"] = utc_now_iso()
 
@@ -109,10 +94,6 @@ def create_scan_run(
     control_id: str,
     trigger_type: str,
 ) -> str:
-    """
-    Create a scan_runs record when a new scan begins.
-    """
-
     response = (
         supabase
         .table("scan_runs")
@@ -139,10 +120,6 @@ def update_scan_run(
     run_id: str,
     values: dict,
 ) -> None:
-    """
-    Update an existing scan_runs record.
-    """
-
     response = (
         supabase
         .table("scan_runs")
@@ -162,49 +139,28 @@ def update_scan_run(
 # ---------------------------------------------------------
 
 def scanner_can_start(control: dict) -> bool:
-    """
-    Determine whether a new scanner run is allowed.
-
-    Pause never interrupts an existing scan.
-    It only prevents future scans from starting.
-    """
-
     if control.get("enabled") is False:
         print("")
         print("Scanner is paused.")
         print("No scan was started.")
-
         return False
 
     if control.get("status") == "paused":
         print("")
         print("Scanner is paused.")
         print("No scan was started.")
-
         return False
 
     if control.get("status") == "running":
         print("")
         print("A scanner run is already active.")
         print("No duplicate scan was started.")
-
         return False
 
     return True
 
 
 def determine_final_control_status() -> str:
-    """
-    Determine what state the scanner should enter
-    after the current full scan has completed.
-
-    If the user pressed Pause while the scan was running,
-    enabled will now be False and the completed scanner
-    moves into the paused state.
-
-    Otherwise it returns to idle.
-    """
-
     latest_control = get_scanner_control()
 
     if latest_control.get("enabled") is False:
@@ -218,16 +174,6 @@ def determine_final_control_status() -> str:
 # ---------------------------------------------------------
 
 def get_run_status(result: dict) -> str:
-    """
-    Determine the final scan_runs status.
-
-    A completely successful scan is marked success.
-
-    If one or more individual properties failed but the
-    scanner still completed the portfolio, mark the run
-    partial rather than failed.
-    """
-
     failed_count = result.get("failed", 0)
 
     if failed_count > 0:
@@ -240,16 +186,6 @@ def save_successful_run(
     run_id: str,
     result: dict,
 ) -> str:
-    """
-    Save the real results returned by scanner_v4
-    into scan_runs.
-
-    This is the data Nyro will later use for:
-    - Today's scan summary
-    - Recent scan history
-    - Scanner analytics
-    """
-
     run_status = get_run_status(result)
 
     update_scan_run(
@@ -259,6 +195,22 @@ def save_successful_run(
             "finished_at": utc_now_iso(),
             "properties_checked": result.get(
                 "processed",
+                0,
+            ),
+            "new_listings": result.get(
+                "new_listings",
+                0,
+            ),
+            "price_reductions": result.get(
+                "price_reductions",
+                0,
+            ),
+            "relisted_properties": result.get(
+                "relisted_properties",
+                0,
+            ),
+            "off_market_properties": result.get(
+                "off_market_properties",
                 0,
             ),
             "events_created": result.get(
@@ -283,30 +235,10 @@ def save_successful_run(
 def run_scanner(
     trigger_type: str = "manual",
 ) -> None:
-    """
-    Run the complete Nyro property scanning process.
-
-    Responsibilities:
-
-    1. Read scanner_control.
-    2. Confirm scanning is enabled.
-    3. Prevent duplicate scanner runs.
-    4. Create a scan_runs record.
-    5. Mark scanner_control as running.
-    6. Run scanner_v4 in headless mode.
-    7. Store real scan statistics.
-    8. Return the scanner to idle or paused.
-    9. Record failures safely.
-    """
-
     run_id = None
     control_id = None
 
     try:
-        # -------------------------------------------------
-        # Load scanner state
-        # -------------------------------------------------
-
         control = get_scanner_control()
         control_id = control["id"]
 
@@ -322,25 +254,13 @@ def run_scanner(
             f"{control.get('status')}"
         )
 
-        # -------------------------------------------------
-        # Check whether a scan may start
-        # -------------------------------------------------
-
         if not scanner_can_start(control):
             return
-
-        # -------------------------------------------------
-        # Create scan run
-        # -------------------------------------------------
 
         run_id = create_scan_run(
             control_id=control_id,
             trigger_type=trigger_type,
         )
-
-        # -------------------------------------------------
-        # Mark scanner as running
-        # -------------------------------------------------
 
         update_scanner_control(
             control_id=control_id,
@@ -359,35 +279,19 @@ def run_scanner(
             f"{trigger_type}"
         )
 
-        # -------------------------------------------------
-        # Run the actual scanner
-        # -------------------------------------------------
-
         result = run_scanner_v4(
             supabase=supabase,
             headless=True,
         )
-
-        # -------------------------------------------------
-        # Save real scanner statistics
-        # -------------------------------------------------
 
         run_status = save_successful_run(
             run_id=run_id,
             result=result,
         )
 
-        # -------------------------------------------------
-        # Determine final engine state
-        # -------------------------------------------------
-
         final_control_status = (
             determine_final_control_status()
         )
-
-        # -------------------------------------------------
-        # Update scanner control
-        # -------------------------------------------------
 
         update_scanner_control(
             control_id=control_id,
@@ -397,10 +301,6 @@ def run_scanner(
                 "last_error": None,
             },
         )
-
-        # -------------------------------------------------
-        # Terminal summary
-        # -------------------------------------------------
 
         print("")
         print("Scanner run finished.")
@@ -426,6 +326,26 @@ def run_scanner(
         )
 
         print(
+            f"New listings: "
+            f"{result.get('new_listings', 0)}"
+        )
+
+        print(
+            f"Price reductions: "
+            f"{result.get('price_reductions', 0)}"
+        )
+
+        print(
+            f"Relisted properties: "
+            f"{result.get('relisted_properties', 0)}"
+        )
+
+        print(
+            f"Off market properties: "
+            f"{result.get('off_market_properties', 0)}"
+        )
+
+        print(
             f"Run status: "
             f"{run_status}"
         )
@@ -442,10 +362,6 @@ def run_scanner(
         print("Scanner orchestrator failed.")
         print(f"Error: {error_message}")
         print("")
-
-        # -------------------------------------------------
-        # Mark scan run as failed
-        # -------------------------------------------------
 
         if run_id:
             try:
@@ -469,10 +385,6 @@ def run_scanner(
                     f"Update error: "
                     f"{update_error}"
                 )
-
-        # -------------------------------------------------
-        # Mark scanner engine as failed
-        # -------------------------------------------------
 
         if control_id:
             try:
