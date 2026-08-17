@@ -58,7 +58,7 @@ supabase: Client = create_client(
 
 app = FastAPI(
     title="Nyro Scanner API",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 
@@ -187,17 +187,18 @@ def get_recent_scan_runs(
 
 def launch_scanner_process() -> None:
     """
-    Start scanner_orchestrator.py as a separate process.
+    Start scanner_orchestrator.py as a separate manual process.
+
+    Manual scans are allowed regardless of whether automatic
+    scheduled scanning is enabled.
 
     The orchestrator remains responsible for:
-
-    - checking whether scanning is enabled
     - preventing duplicate runs
     - creating scan_runs
-    - setting status to running
-    - completing the full portfolio scan
+    - setting engine status to running
+    - completing the portfolio scan
     - storing statistics
-    - returning to idle or paused
+    - returning engine status to idle
     """
 
     subprocess.Popen(
@@ -223,7 +224,7 @@ def health_check():
     return {
         "success": True,
         "service": "Nyro Scanner API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "message": "Scanner API is online.",
     }
 
@@ -271,8 +272,9 @@ def scanner_today():
 
     For now this endpoint uses the latest run rather than
     aggregating multiple runs from the same calendar day.
+
     That matches the Scanner dashboard's current purpose:
-    show the results of the latest completed scan.
+    show the results of the latest scanner run.
     """
 
     latest_run = get_latest_scan_run()
@@ -333,18 +335,20 @@ def scanner_today():
 def run_scanner(
     x_api_key: str = Header(None),
 ):
+    """
+    Start a manual scanner run.
+
+    Manual runs are independent of the automatic scanning
+    setting. They are allowed when enabled is either True
+    or False.
+
+    The only normal condition that blocks a manual run is
+    another scanner run already being active.
+    """
+
     verify_api_key(x_api_key)
 
     control = get_scanner_control()
-
-    if not control.get("enabled", False):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "The scanner is paused. "
-                "Resume it before starting a scan."
-            ),
-        )
 
     if control.get("status") == "running":
         raise HTTPException(
@@ -356,97 +360,85 @@ def run_scanner(
 
     return {
         "success": True,
-        "message": "Scanner launch requested.",
+        "message": "Manual scanner launch requested.",
     }
 
 
 # ---------------------------------------------------------
-# Pause scanner
+# Disable automatic scanning
 # ---------------------------------------------------------
 
-@app.post("/scanner/pause")
-def pause_scanner(
+@app.post("/scanner/disable-auto")
+def disable_automatic_scanning(
     x_api_key: str = Header(None),
 ):
+    """
+    Disable future scheduled scanner runs.
+
+    This does not interrupt an active scan.
+    Manual scanner runs remain available.
+    """
+
     verify_api_key(x_api_key)
 
-    control = get_scanner_control()
-    current_status = control.get("status")
+    updated = update_scanner_control(
+        {
+            "enabled": False,
+        }
+    )
 
-    # Important:
-    # Pause NEVER interrupts an active scanner run.
-    # It only prevents future runs.
-    if current_status == "running":
+    if updated.get("status") == "paused":
         updated = update_scanner_control(
             {
-                "enabled": False,
+                "status": "idle",
             }
-        )
-
-        message = (
-            "Scanner paused for future runs. "
-            "The current scan will continue until completion."
-        )
-
-    else:
-        updated = update_scanner_control(
-            {
-                "enabled": False,
-                "status": "paused",
-            }
-        )
-
-        message = (
-            "Scanner paused. "
-            "Future scans are disabled."
         )
 
     return {
         "success": True,
-        "message": message,
+        "message": (
+            "Automatic scanning disabled. "
+            "Manual scanner runs remain available."
+        ),
         "scanner": updated,
     }
 
 
 # ---------------------------------------------------------
-# Resume scanner
+# Enable automatic scanning
 # ---------------------------------------------------------
 
-@app.post("/scanner/resume")
-def resume_scanner(
+@app.post("/scanner/enable-auto")
+def enable_automatic_scanning(
     x_api_key: str = Header(None),
 ):
+    """
+    Enable future scheduled scanner runs.
+
+    This does not start a scan immediately.
+    Manual scanner runs remain available.
+    """
+
     verify_api_key(x_api_key)
 
     control = get_scanner_control()
 
-    if control.get("status") == "running":
-        updated = update_scanner_control(
-            {
-                "enabled": True,
-            }
-        )
+    values = {
+        "enabled": True,
+    }
 
-        message = (
-            "Future scans have been enabled. "
-            "The current scan is still running."
-        )
+    if control.get("status") == "paused":
+        values["status"] = "idle"
 
-    else:
-        updated = update_scanner_control(
-            {
-                "enabled": True,
-                "status": "idle",
-                "last_error": None,
-            }
-        )
-
-        message = (
-            "Scanner resumed and is ready to run."
-        )
+    updated = update_scanner_control(
+        values
+    )
 
     return {
         "success": True,
-        "message": message,
+        "message": (
+            "Automatic scanning enabled. "
+            "Scheduled scanner runs are now allowed."
+        ),
         "scanner": updated,
     }
