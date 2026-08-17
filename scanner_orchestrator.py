@@ -135,21 +135,22 @@ def update_scan_run(
 
 
 # ---------------------------------------------------------
-# Scanner checks
+# Scanner start checks
 # ---------------------------------------------------------
 
-def scanner_can_start(control: dict) -> bool:
-    if control.get("enabled") is False:
-        print("")
-        print("Scanner is paused.")
-        print("No scan was started.")
-        return False
+def scanner_can_start(
+    control: dict,
+    trigger_type: str,
+) -> bool:
+    """
+    Manual scans can run whether automatic scanning
+    is enabled or disabled.
 
-    if control.get("status") == "paused":
-        print("")
-        print("Scanner is paused.")
-        print("No scan was started.")
-        return False
+    Scheduled scans only run when enabled=True.
+
+    No duplicate scan may start while the scanner
+    is already running.
+    """
 
     if control.get("status") == "running":
         print("")
@@ -157,24 +158,29 @@ def scanner_can_start(control: dict) -> bool:
         print("No duplicate scan was started.")
         return False
 
+    if (
+        trigger_type == "scheduled"
+        and control.get("enabled") is False
+    ):
+        print("")
+        print("Automatic scanning is disabled.")
+        print("Scheduled scan skipped.")
+        return False
+
     return True
-
-
-def determine_final_control_status() -> str:
-    latest_control = get_scanner_control()
-
-    if latest_control.get("enabled") is False:
-        return "paused"
-
-    return "idle"
 
 
 # ---------------------------------------------------------
 # Scanner result helpers
 # ---------------------------------------------------------
 
-def get_run_status(result: dict) -> str:
-    failed_count = result.get("failed", 0)
+def get_run_status(
+    result: dict,
+) -> str:
+    failed_count = result.get(
+        "failed",
+        0,
+    )
 
     if failed_count > 0:
         return "partial"
@@ -186,41 +192,52 @@ def save_successful_run(
     run_id: str,
     result: dict,
 ) -> str:
-    run_status = get_run_status(result)
+    run_status = get_run_status(
+        result,
+    )
 
     update_scan_run(
         run_id=run_id,
         values={
             "status": run_status,
             "finished_at": utc_now_iso(),
+
+            # Everything the scanner attempted.
             "properties_checked": result.get(
-                "processed",
+                "total_properties",
                 0,
             ),
+
             "new_listings": result.get(
                 "new_listings",
                 0,
             ),
+
             "price_reductions": result.get(
                 "price_reductions",
                 0,
             ),
+
             "relisted_properties": result.get(
                 "relisted_properties",
                 0,
             ),
+
             "off_market_properties": result.get(
                 "off_market_properties",
                 0,
             ),
+
             "events_created": result.get(
                 "events_created",
                 0,
             ),
+
             "errors_count": result.get(
                 "failed",
                 0,
             ),
+
             "error_message": None,
         },
     )
@@ -235,10 +252,33 @@ def save_successful_run(
 def run_scanner(
     trigger_type: str = "manual",
 ) -> None:
+    """
+    Run the complete Nyro scanner.
+
+    trigger_type="manual"
+        - can run even when automatic scanning is disabled.
+
+    trigger_type="scheduled"
+        - only runs when scanner_control.enabled is True.
+
+    scanner_control.status describes the engine itself:
+        idle
+        running
+        failed
+
+    scanner_control.enabled describes automatic scanning:
+        True  = scheduled scans enabled
+        False = scheduled scans disabled
+    """
+
     run_id = None
     control_id = None
 
     try:
+        # -------------------------------------------------
+        # Read scanner state
+        # -------------------------------------------------
+
         control = get_scanner_control()
         control_id = control["id"]
 
@@ -246,21 +286,40 @@ def run_scanner(
         print("Scanner control row found.")
         print(f"ID: {control_id}")
         print(
-            f"Enabled: "
+            f"Automatic scanning enabled: "
             f"{control.get('enabled')}"
         )
         print(
-            f"Status: "
+            f"Engine status: "
             f"{control.get('status')}"
         )
+        print(
+            f"Trigger type: "
+            f"{trigger_type}"
+        )
 
-        if not scanner_can_start(control):
+        # -------------------------------------------------
+        # Check whether this run may start
+        # -------------------------------------------------
+
+        if not scanner_can_start(
+            control=control,
+            trigger_type=trigger_type,
+        ):
             return
+
+        # -------------------------------------------------
+        # Create scan_runs row
+        # -------------------------------------------------
 
         run_id = create_scan_run(
             control_id=control_id,
             trigger_type=trigger_type,
         )
+
+        # -------------------------------------------------
+        # Mark engine running
+        # -------------------------------------------------
 
         update_scanner_control(
             control_id=control_id,
@@ -279,28 +338,43 @@ def run_scanner(
             f"{trigger_type}"
         )
 
+        # -------------------------------------------------
+        # Run scanner
+        # -------------------------------------------------
+
         result = run_scanner_v4(
             supabase=supabase,
             headless=True,
         )
+
+        # -------------------------------------------------
+        # Store run statistics
+        # -------------------------------------------------
 
         run_status = save_successful_run(
             run_id=run_id,
             result=result,
         )
 
-        final_control_status = (
-            determine_final_control_status()
-        )
+        # -------------------------------------------------
+        # Scanner always returns to idle after completion.
+        #
+        # enabled remains untouched because it now controls
+        # automatic scheduling only.
+        # -------------------------------------------------
 
         update_scanner_control(
             control_id=control_id,
             values={
-                "status": final_control_status,
+                "status": "idle",
                 "last_completed_at": utc_now_iso(),
                 "last_error": None,
             },
         )
+
+        # -------------------------------------------------
+        # Terminal summary
+        # -------------------------------------------------
 
         print("")
         print("Scanner run finished.")
@@ -351,8 +425,7 @@ def run_scanner(
         )
 
         print(
-            f"Final scanner status: "
-            f"{final_control_status}"
+            "Final scanner status: idle"
         )
 
     except Exception as exc:
@@ -360,8 +433,15 @@ def run_scanner(
 
         print("")
         print("Scanner orchestrator failed.")
-        print(f"Error: {error_message}")
+        print(
+            f"Error: "
+            f"{error_message}"
+        )
         print("")
+
+        # -------------------------------------------------
+        # Mark scan run failed
+        # -------------------------------------------------
 
         if run_id:
             try:
@@ -385,6 +465,12 @@ def run_scanner(
                     f"Update error: "
                     f"{update_error}"
                 )
+
+        # -------------------------------------------------
+        # Mark engine failed
+        #
+        # enabled is deliberately not changed.
+        # -------------------------------------------------
 
         if control_id:
             try:
