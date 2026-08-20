@@ -243,9 +243,7 @@ def run_scanner_v4(
                                     "successfully."
                                 )
 
-                            except Exception as (
-                                restart_error
-                            ):
+                            except Exception as restart_error:
 
                                 extraction_error = (
                                     restart_error
