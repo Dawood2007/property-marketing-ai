@@ -93,11 +93,9 @@ def extract_clean_description(soup):
     )
 
     if direction_index != -1:
-        before_directions = (
-            clean_text[
-                :direction_index
-            ].strip()
-        )
+        before_directions = clean_text[
+            :direction_index
+        ].strip()
 
         after_directions = clean_text[
             direction_index:
@@ -106,10 +104,8 @@ def extract_clean_description(soup):
         closing_line = None
 
         for marker in end_markers:
-            marker_index = (
-                after_directions.find(
-                    marker
-                )
+            marker_index = after_directions.find(
+                marker
             )
 
             if marker_index != -1:
@@ -126,16 +122,14 @@ def extract_clean_description(soup):
 
     else:
         for marker in end_markers:
-            marker_index = (
-                clean_text.find(
-                    marker
-                )
+            marker_index = clean_text.find(
+                marker
             )
 
             if marker_index != -1:
                 marker_end = (
-                    marker_index +
-                    len(marker)
+                    marker_index
+                    + len(marker)
                 )
 
                 clean_text = clean_text[
@@ -145,6 +139,60 @@ def extract_clean_description(soup):
                 break
 
     return clean_text.strip()
+
+
+def extract_listing_status(
+    soup,
+    heading_text,
+):
+    status_span = soup.select_one(
+        ".detail-propstat_sold_stc"
+    )
+
+    if status_span:
+        status_text = status_span.get_text(
+            " ",
+            strip=True,
+        )
+
+        if status_text:
+            return status_text
+
+    normalized_heading = (
+        heading_text or ""
+    ).lower()
+
+    known_statuses = [
+        (
+            "sold stc",
+            "Sold STC",
+        ),
+        (
+            "under offer",
+            "Under Offer",
+        ),
+        (
+            "let agreed",
+            "Let Agreed",
+        ),
+        (
+            "let by",
+            "Let By",
+        ),
+        (
+            "sold",
+            "Sold",
+        ),
+    ]
+
+    for (
+        search_text,
+        status_label,
+    ) in known_statuses:
+        if search_text in normalized_heading:
+            return status_label
+
+    return None
 
 
 def extract_property(
@@ -177,8 +225,8 @@ def extract_property(
     )
 
     if (
-        title and
-        "404" in title.lower()
+        title
+        and "404" in title.lower()
     ):
         return {
             "property_url": property_url,
@@ -190,10 +238,8 @@ def extract_property(
             "is_404": True,
         }
 
-    description = (
-        extract_clean_description(
-            soup
-        )
+    description = extract_clean_description(
+        soup
     )
 
     if not description:
@@ -242,16 +288,9 @@ def extract_property(
         price_text
     )
 
-    status_span = soup.select_one(
-        ".detail-propstat_sold_stc"
-    )
-
-    page_status = (
-        status_span.get_text(
-            strip=True
-        )
-        if status_span
-        else None
+    page_status = extract_listing_status(
+        soup,
+        h2_text,
     )
 
     image_tags = soup.find_all(
@@ -270,24 +309,18 @@ def extract_property(
     property_type = h2_text
 
     if price_text:
-        property_type = (
-            property_type.replace(
-                price_text,
-                "",
-            )
+        property_type = property_type.replace(
+            price_text,
+            "",
         )
 
     if page_status:
-        property_type = (
-            property_type.replace(
-                page_status,
-                "",
-            )
+        property_type = property_type.replace(
+            page_status,
+            "",
         )
 
-    property_type = (
-        property_type.strip()
-    )
+    property_type = property_type.strip()
 
     return {
         "property_url": property_url,
