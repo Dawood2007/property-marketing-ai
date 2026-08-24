@@ -1,18 +1,59 @@
+import os
+
 from dotenv import load_dotenv
 from openai import OpenAI
-from supabase import create_client
 from pydantic import BaseModel
-import os
+from supabase import create_client
+
+
+# ---------------------------------------------------------
+# Environment
+# ---------------------------------------------------------
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
+OPENAI_API_KEY = os.getenv(
+    "OPENAI_API_KEY"
 )
 
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL"
+)
+
+SUPABASE_KEY = os.getenv(
+    "SUPABASE_KEY"
+)
+
+
+if not OPENAI_API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY is missing from the environment."
+    )
+
+if not SUPABASE_URL:
+    raise RuntimeError(
+        "SUPABASE_URL is missing from the environment."
+    )
+
+if not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_KEY is missing from the environment."
+    )
+
+
+client = OpenAI(
+    api_key=OPENAI_API_KEY
+)
+
+default_supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+)
+
+
+# ---------------------------------------------------------
+# Structured AI output
+# ---------------------------------------------------------
 
 class PlatformDrafts(BaseModel):
     instagram: str
@@ -20,22 +61,47 @@ class PlatformDrafts(BaseModel):
     tiktok: str
 
 
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+
 def format_price(price):
     if price is None:
         return "Price on application"
 
-    return f"£{price:,.0f}"
+    return f"£{float(price):,.0f}"
 
 
 def load_marketing_brain():
-    file_path = os.path.join("ai", "marketing_brain.txt")
+    base_dir = os.path.dirname(
+        os.path.abspath(__file__)
+    )
 
-    with open(file_path, "r", encoding="utf-8") as file:
+    file_path = os.path.join(
+        base_dir,
+        "ai",
+        "marketing_brain.txt",
+    )
+
+    with open(
+        file_path,
+        "r",
+        encoding="utf-8",
+    ) as file:
         return file.read()
 
 
-def generate_ai_drafts(event_type, property_data):
-    marketing_brain = load_marketing_brain()
+# ---------------------------------------------------------
+# AI generation
+# ---------------------------------------------------------
+
+def generate_ai_drafts(
+    event_type,
+    property_data,
+):
+    marketing_brain = (
+        load_marketing_brain()
+    )
 
     instructions = f"""
 {marketing_brain}
@@ -64,6 +130,7 @@ EVENT RULES
 NEW_LISTING:
 - Present the property as newly available.
 - Focus on its strongest benefits and why it deserves attention.
+- Do not claim it was listed today unless that information is supplied.
 
 PRICE_REDUCED:
 - Clearly state that the price has been reduced.
@@ -76,6 +143,15 @@ RELISTED:
 - Do not imply why the previous sale or tenancy failed.
 - Focus on the renewed opportunity.
 
+SOLD:
+- Clearly celebrate that the property has been sold.
+- Thank the seller for trusting BM Estates.
+- Keep the tone positive and professional.
+- Do not describe the property as still available.
+- Do not invite people to arrange a viewing of the sold property.
+- End with a call to action aimed at homeowners thinking of selling.
+- Do not invent the sale price or details of the transaction.
+
 INSTAGRAM
 
 - Engaging and visually scannable.
@@ -83,16 +159,16 @@ INSTAGRAM
 - Approximately 120–190 words.
 - Selective emojis.
 - Include 4–7 relevant hashtags.
-- End with a viewing or enquiry call to action.
+- End with an appropriate call to action.
 
 FACEBOOK
 
 - More informative and conversational than Instagram.
 - Approximately 150–240 words.
-- Explain practical and lifestyle benefits.
+- Explain practical and lifestyle benefits where appropriate.
 - Use fewer emojis.
 - Use no more than 3 hashtags.
-- End with a viewing or enquiry call to action.
+- End with an appropriate call to action.
 
 TIKTOK
 
@@ -101,7 +177,7 @@ TIKTOK
 - Approximately 50–100 words.
 - Keep it punchier than the other versions.
 - Include 3–5 relevant hashtags.
-- End with a short viewing or enquiry call to action.
+- End with a short appropriate call to action.
 """
 
     property_input = f"""
@@ -110,6 +186,9 @@ EVENT TYPE
 
 PROPERTY TITLE
 {property_data.get("title")}
+
+LISTING STATUS
+{property_data.get("listing_status")}
 
 PRICE
 {format_price(property_data.get("price"))}
@@ -140,68 +219,296 @@ BM Estates
     return response.output_parsed
 
 
-events = (
-    supabase.table("listing_events")
-    .select("id, event_type, property_listing_id")
-    .eq("processed", False)
-    .in_("event_type", ["NEW_LISTING", "PRICE_REDUCED", "RELISTED"])
-    .execute()
-    .data
-)
+# ---------------------------------------------------------
+# Draft database helpers
+# ---------------------------------------------------------
 
-print(f"Eligible events to process: {len(events)}")
+def draft_already_exists(
+    supabase,
+    event_id,
+    platform,
+):
+    response = (
+        supabase
+        .table("marketing_drafts")
+        .select("id")
+        .eq(
+            "listing_event_id",
+            event_id,
+        )
+        .eq(
+            "platform",
+            platform,
+        )
+        .limit(1)
+        .execute()
+    )
 
-created = 0
-failed = 0
+    return bool(
+        response.data
+    )
 
-for event in events:
-    event_id = event["id"]
-    event_type = event["event_type"]
-    property_id = event["property_listing_id"]
 
-    print(f"\nProcessing event {event_id}: {event_type}")
-
-    try:
-        property_response = (
-            supabase.table("property_listings")
-            .select("*")
-            .eq("id", property_id)
-            .single()
-            .execute()
+def insert_draft(
+    supabase,
+    event_id,
+    property_id,
+    platform,
+    draft_text,
+):
+    if draft_already_exists(
+        supabase,
+        event_id,
+        platform,
+    ):
+        print(
+            f"Draft already exists: "
+            f"event {event_id} / "
+            f"{platform}"
         )
 
-        property_data = property_response.data
+        return False
 
-        drafts = generate_ai_drafts(event_type, property_data)
+    (
+        supabase
+        .table("marketing_drafts")
+        .insert(
+            {
+                "listing_event_id":
+                    event_id,
 
-        platform_drafts = {
-            "Instagram": drafts.instagram,
-            "Facebook": drafts.facebook,
-            "TikTok": drafts.tiktok,
-        }
+                "property_listing_id":
+                    property_id,
 
-        for platform, draft_text in platform_drafts.items():
-            supabase.table("marketing_drafts").insert({
-                "listing_event_id": event_id,
-                "property_listing_id": property_id,
-                "platform": platform,
-                "draft_text": draft_text,
-                "approval_status": "Pending Approval"
-            }).execute()
+                "platform":
+                    platform,
 
-            created += 1
+                "draft_text":
+                    draft_text,
 
-        supabase.table("listing_events").update({
-            "processed": True
-        }).eq("id", event_id).execute()
+                "approval_status":
+                    "Pending Approval",
+            }
+        )
+        .execute()
+    )
 
-        print(f"Created 3 AI drafts for event {event_id}")
+    return True
 
-    except Exception as error:
-        failed += 1
-        print(f"FAILED event {event_id}")
-        print(error)
 
-print("\nAI draft generation finished.")
-print(f"Drafts created: {created}")
-print(f"Events failed: {failed}")
+# ---------------------------------------------------------
+# Main draft generator
+# ---------------------------------------------------------
+
+def run_draft_generation(
+    supabase=None,
+):
+    if supabase is None:
+        supabase = (
+            default_supabase
+        )
+
+    eligible_event_types = [
+        "NEW_LISTING",
+        "PRICE_REDUCED",
+        "RELISTED",
+        "SOLD",
+    ]
+
+    events = (
+        supabase
+        .table("listing_events")
+        .select(
+            "id, "
+            "event_type, "
+            "property_listing_id"
+        )
+        .eq(
+            "processed",
+            False,
+        )
+        .in_(
+            "event_type",
+            eligible_event_types,
+        )
+        .order(
+            "created_at",
+        )
+        .execute()
+        .data
+    )
+
+    print("")
+    print(
+        "AI draft generation starting."
+    )
+
+    print(
+        f"Eligible events to process: "
+        f"{len(events)}"
+    )
+
+    drafts_created = 0
+    events_processed = 0
+    events_failed = 0
+
+    for event in events:
+        event_id = event[
+            "id"
+        ]
+
+        event_type = event[
+            "event_type"
+        ]
+
+        property_id = event[
+            "property_listing_id"
+        ]
+
+        print("")
+        print(
+            f"Processing event "
+            f"{event_id}: "
+            f"{event_type}"
+        )
+
+        try:
+            property_response = (
+                supabase
+                .table(
+                    "property_listings"
+                )
+                .select("*")
+                .eq(
+                    "id",
+                    property_id,
+                )
+                .single()
+                .execute()
+            )
+
+            property_data = (
+                property_response.data
+            )
+
+            if not property_data:
+                raise RuntimeError(
+                    f"Property {property_id} "
+                    f"could not be loaded."
+                )
+
+            drafts = (
+                generate_ai_drafts(
+                    event_type,
+                    property_data,
+                )
+            )
+
+            platform_drafts = {
+                "Instagram":
+                    drafts.instagram,
+
+                "Facebook":
+                    drafts.facebook,
+
+                "TikTok":
+                    drafts.tiktok,
+            }
+
+            for (
+                platform,
+                draft_text,
+            ) in platform_drafts.items():
+
+                inserted = (
+                    insert_draft(
+                        supabase=supabase,
+                        event_id=event_id,
+                        property_id=property_id,
+                        platform=platform,
+                        draft_text=draft_text,
+                    )
+                )
+
+                if inserted:
+                    drafts_created += 1
+
+            (
+                supabase
+                .table(
+                    "listing_events"
+                )
+                .update(
+                    {
+                        "processed":
+                            True,
+                    }
+                )
+                .eq(
+                    "id",
+                    event_id,
+                )
+                .execute()
+            )
+
+            events_processed += 1
+
+            print(
+                f"Draft generation complete "
+                f"for event {event_id}."
+            )
+
+        except Exception as error:
+            events_failed += 1
+
+            print("")
+            print(
+                f"FAILED event "
+                f"{event_id}"
+            )
+
+            print(
+                f"Error: "
+                f"{error}"
+            )
+
+    result = {
+        "drafts_created":
+            drafts_created,
+
+        "events_processed":
+            events_processed,
+
+        "events_failed":
+            events_failed,
+    }
+
+    print("")
+    print(
+        "AI draft generation finished."
+    )
+
+    print(
+        f"Drafts created: "
+        f"{drafts_created}"
+    )
+
+    print(
+        f"Events processed: "
+        f"{events_processed}"
+    )
+
+    print(
+        f"Events failed: "
+        f"{events_failed}"
+    )
+
+    return result
+
+
+# ---------------------------------------------------------
+# Manual entry point
+# ---------------------------------------------------------
+
+if __name__ == "__main__":
+    run_draft_generation()
