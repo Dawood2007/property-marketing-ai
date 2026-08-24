@@ -24,6 +24,16 @@ SUPABASE_KEY = os.getenv(
     "SUPABASE_KEY"
 )
 
+DRAFT_GENERATION_ENABLED = (
+    os.getenv(
+        "DRAFT_GENERATION_ENABLED",
+        "false",
+    )
+    .strip()
+    .lower()
+    == "true"
+)
+
 
 if not OPENAI_API_KEY:
     raise RuntimeError(
@@ -69,7 +79,28 @@ def format_price(price):
     if price is None:
         return "Price on application"
 
-    return f"£{float(price):,.0f}"
+    try:
+        return f"£{float(price):,.0f}"
+
+    except (TypeError, ValueError):
+        return str(price)
+
+
+def format_event_value(
+    event_type,
+    value,
+):
+    if value is None:
+        return "Not supplied"
+
+    if event_type == "PRICE_REDUCED":
+        return format_price(
+            value
+        )
+
+    return str(
+        value
+    )
 
 
 def load_marketing_brain():
@@ -98,9 +129,25 @@ def load_marketing_brain():
 def generate_ai_drafts(
     event_type,
     property_data,
+    old_value=None,
+    new_value=None,
 ):
     marketing_brain = (
         load_marketing_brain()
+    )
+
+    formatted_old_value = (
+        format_event_value(
+            event_type,
+            old_value,
+        )
+    )
+
+    formatted_new_value = (
+        format_event_value(
+            event_type,
+            new_value,
+        )
     )
 
     instructions = f"""
@@ -135,6 +182,8 @@ NEW_LISTING:
 PRICE_REDUCED:
 - Clearly state that the price has been reduced.
 - Mention the current price.
+- If both old and new prices are supplied, clearly state both.
+- Never guess a previous price.
 - Do not invent urgency.
 - Do not call it a new listing.
 
@@ -184,6 +233,12 @@ TIKTOK
 EVENT TYPE
 {event_type}
 
+EVENT OLD VALUE
+{formatted_old_value}
+
+EVENT NEW VALUE
+{formatted_new_value}
+
 PROPERTY TITLE
 {property_data.get("title")}
 
@@ -230,8 +285,12 @@ def draft_already_exists(
 ):
     response = (
         supabase
-        .table("marketing_drafts")
-        .select("id")
+        .table(
+            "marketing_drafts"
+        )
+        .select(
+            "id"
+        )
         .eq(
             "listing_event_id",
             event_id,
@@ -240,7 +299,9 @@ def draft_already_exists(
             "platform",
             platform,
         )
-        .limit(1)
+        .limit(
+            1
+        )
         .execute()
     )
 
@@ -271,7 +332,9 @@ def insert_draft(
 
     (
         supabase
-        .table("marketing_drafts")
+        .table(
+            "marketing_drafts"
+        )
         .insert(
             {
                 "listing_event_id":
@@ -297,12 +360,24 @@ def insert_draft(
 
 
 # ---------------------------------------------------------
-# Main draft generator
+# Main draft generation pipeline
 # ---------------------------------------------------------
 
 def run_draft_generation(
     supabase=None,
 ):
+    if not DRAFT_GENERATION_ENABLED:
+        print("")
+        print(
+            "AI draft generation is disabled."
+        )
+
+        return {
+            "drafts_created": 0,
+            "events_processed": 0,
+            "events_failed": 0,
+        }
+
     if supabase is None:
         supabase = (
             default_supabase
@@ -317,11 +392,15 @@ def run_draft_generation(
 
     events = (
         supabase
-        .table("listing_events")
+        .table(
+            "listing_events"
+        )
         .select(
             "id, "
             "event_type, "
-            "property_listing_id"
+            "property_listing_id, "
+            "old_value, "
+            "new_value"
         )
         .eq(
             "processed",
@@ -332,7 +411,7 @@ def run_draft_generation(
             eligible_event_types,
         )
         .order(
-            "created_at",
+            "created_at"
         )
         .execute()
         .data
@@ -353,17 +432,31 @@ def run_draft_generation(
     events_failed = 0
 
     for event in events:
-        event_id = event[
-            "id"
-        ]
+        event_id = (
+            event["id"]
+        )
 
-        event_type = event[
-            "event_type"
-        ]
+        event_type = (
+            event["event_type"]
+        )
 
-        property_id = event[
-            "property_listing_id"
-        ]
+        property_id = (
+            event[
+                "property_listing_id"
+            ]
+        )
+
+        old_value = (
+            event.get(
+                "old_value"
+            )
+        )
+
+        new_value = (
+            event.get(
+                "new_value"
+            )
+        )
 
         print("")
         print(
@@ -378,7 +471,9 @@ def run_draft_generation(
                 .table(
                     "property_listings"
                 )
-                .select("*")
+                .select(
+                    "*"
+                )
                 .eq(
                     "id",
                     property_id,
@@ -393,14 +488,24 @@ def run_draft_generation(
 
             if not property_data:
                 raise RuntimeError(
-                    f"Property {property_id} "
+                    f"Property "
+                    f"{property_id} "
                     f"could not be loaded."
                 )
 
             drafts = (
                 generate_ai_drafts(
-                    event_type,
-                    property_data,
+                    event_type=
+                        event_type,
+
+                    property_data=
+                        property_data,
+
+                    old_value=
+                        old_value,
+
+                    new_value=
+                        new_value,
                 )
             )
 
@@ -422,11 +527,20 @@ def run_draft_generation(
 
                 inserted = (
                     insert_draft(
-                        supabase=supabase,
-                        event_id=event_id,
-                        property_id=property_id,
-                        platform=platform,
-                        draft_text=draft_text,
+                        supabase=
+                            supabase,
+
+                        event_id=
+                            event_id,
+
+                        property_id=
+                            property_id,
+
+                        platform=
+                            platform,
+
+                        draft_text=
+                            draft_text,
                     )
                 )
 
@@ -454,8 +568,9 @@ def run_draft_generation(
             events_processed += 1
 
             print(
-                f"Draft generation complete "
-                f"for event {event_id}."
+                f"Draft generation "
+                f"complete for event "
+                f"{event_id}."
             )
 
         except Exception as error:
