@@ -35,7 +35,7 @@ DRAFT_GENERATION_ENABLED = (
 )
 
 
-if not OPENAI_API_KEY:
+if DRAFT_GENERATION_ENABLED and not OPENAI_API_KEY:
     raise RuntimeError(
         "OPENAI_API_KEY is missing from the environment."
     )
@@ -51,8 +51,12 @@ if not SUPABASE_KEY:
     )
 
 
-client = OpenAI(
-    api_key=OPENAI_API_KEY
+client = (
+    OpenAI(
+        api_key=OPENAI_API_KEY
+    )
+    if OPENAI_API_KEY
+    else None
 )
 
 default_supabase = create_client(
@@ -132,6 +136,11 @@ def generate_ai_drafts(
     old_value=None,
     new_value=None,
 ):
+    if client is None:
+        raise RuntimeError(
+            "OpenAI client is not configured."
+        )
+
     marketing_brain = (
         load_marketing_brain()
     )
@@ -205,15 +214,15 @@ INSTAGRAM
 
 - Engaging and visually scannable.
 - Strong first line.
-- Approximately 120–190 words.
+- Approximately 120-190 words.
 - Selective emojis.
-- Include 4–7 relevant hashtags.
+- Include 4-7 relevant hashtags.
 - End with an appropriate call to action.
 
 FACEBOOK
 
 - More informative and conversational than Instagram.
-- Approximately 150–240 words.
+- Approximately 150-240 words.
 - Explain practical and lifestyle benefits where appropriate.
 - Use fewer emojis.
 - Use no more than 3 hashtags.
@@ -223,9 +232,9 @@ TIKTOK
 
 - Write a caption for a property video, not a full script.
 - Hook-first and conversational.
-- Approximately 50–100 words.
+- Approximately 50-100 words.
 - Keep it punchier than the other versions.
-- Include 3–5 relevant hashtags.
+- Include 3-5 relevant hashtags.
 - End with a short appropriate call to action.
 """
 
@@ -377,6 +386,11 @@ def run_draft_generation(
             "events_processed": 0,
             "events_failed": 0,
         }
+
+    if client is None:
+        raise RuntimeError(
+            "OpenAI client is not configured."
+        )
 
     if supabase is None:
         supabase = (
