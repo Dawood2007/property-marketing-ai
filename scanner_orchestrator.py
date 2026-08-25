@@ -8,6 +8,7 @@ from supabase import Client, create_client
 
 from discovery import run_discovery
 from scanner_v4 import run_scanner_v4
+from draft_generator import run_draft_generation
 
 
 # ---------------------------------------------------------
@@ -42,7 +43,9 @@ supabase: Client = create_client(
 # ---------------------------------------------------------
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
 
 # ---------------------------------------------------------
@@ -71,13 +74,19 @@ def update_scanner_control(
     values: dict,
 ) -> None:
     update_values = dict(values)
-    update_values["updated_at"] = utc_now_iso()
+
+    update_values["updated_at"] = (
+        utc_now_iso()
+    )
 
     response = (
         supabase
         .table("scanner_control")
         .update(update_values)
-        .eq("id", control_id)
+        .eq(
+            "id",
+            control_id,
+        )
         .execute()
     )
 
@@ -100,10 +109,17 @@ def create_scan_run(
         .table("scan_runs")
         .insert(
             {
-                "scanner_control_id": control_id,
-                "trigger_type": trigger_type,
-                "status": "running",
-                "started_at": utc_now_iso(),
+                "scanner_control_id":
+                    control_id,
+
+                "trigger_type":
+                    trigger_type,
+
+                "status":
+                    "running",
+
+                "started_at":
+                    utc_now_iso(),
             }
         )
         .execute()
@@ -125,7 +141,10 @@ def update_scan_run(
         supabase
         .table("scan_runs")
         .update(values)
-        .eq("id", run_id)
+        .eq(
+            "id",
+            run_id,
+        )
         .execute()
     )
 
@@ -143,10 +162,18 @@ def scanner_can_start(
     control: dict,
     trigger_type: str,
 ) -> bool:
-    if control.get("status") == "running":
+    if (
+        control.get("status")
+        == "running"
+    ):
         print("")
-        print("A scanner run is already active.")
-        print("No duplicate scan was started.")
+        print(
+            "A scanner run is already active."
+        )
+        print(
+            "No duplicate scan was started."
+        )
+
         return False
 
     if (
@@ -154,8 +181,13 @@ def scanner_can_start(
         and control.get("enabled") is False
     ):
         print("")
-        print("Automatic scanning is disabled.")
-        print("Scheduled scan skipped.")
+        print(
+            "Automatic scanning is disabled."
+        )
+        print(
+            "Scheduled scan skipped."
+        )
+
         return False
 
     return True
@@ -184,89 +216,94 @@ def merge_results(
     scanner_result: dict,
 ) -> dict:
     """
-    Combine discovery statistics with Scanner V4 statistics.
+    Combine property discovery statistics
+    with Scanner V4 monitoring statistics.
 
-    NEW_LISTING events come from discovery.
-
-    Price reductions, relisted and off-market events
-    come from Scanner V4.
-
-    SOLD events are also created during discovery, but
-    scan_runs currently has no sold_properties column,
-    so sold count is logged separately for now.
+    Marketing draft generation is intentionally
+    kept separate from scanner success/failure.
     """
 
     return {
-        "total_properties": scanner_result.get(
-            "total_properties",
-            0,
-        ),
-
-        "processed": scanner_result.get(
-            "processed",
-            0,
-        ),
-
-        "failed": (
+        "total_properties":
             scanner_result.get(
-                "failed",
+                "total_properties",
                 0,
-            )
-            +
+            ),
+
+        "processed":
+            scanner_result.get(
+                "processed",
+                0,
+            ),
+
+        "failed":
+            (
+                scanner_result.get(
+                    "failed",
+                    0,
+                )
+                +
+                discovery_result.get(
+                    "errors",
+                    0,
+                )
+            ),
+
+        "events_created":
+            (
+                scanner_result.get(
+                    "events_created",
+                    0,
+                )
+                +
+                discovery_result.get(
+                    "events_created",
+                    0,
+                )
+            ),
+
+        "new_listings":
+            (
+                scanner_result.get(
+                    "new_listings",
+                    0,
+                )
+                +
+                discovery_result.get(
+                    "new_listings",
+                    0,
+                )
+            ),
+
+        "price_reductions":
+            scanner_result.get(
+                "price_reductions",
+                0,
+            ),
+
+        "relisted_properties":
+            scanner_result.get(
+                "relisted_properties",
+                0,
+            ),
+
+        "off_market_properties":
+            scanner_result.get(
+                "off_market_properties",
+                0,
+            ),
+
+        "sold_properties":
+            discovery_result.get(
+                "sold_properties",
+                0,
+            ),
+
+        "discovery_errors":
             discovery_result.get(
                 "errors",
                 0,
-            )
-        ),
-
-        "events_created": (
-            scanner_result.get(
-                "events_created",
-                0,
-            )
-            +
-            discovery_result.get(
-                "events_created",
-                0,
-            )
-        ),
-
-        "new_listings": (
-            scanner_result.get(
-                "new_listings",
-                0,
-            )
-            +
-            discovery_result.get(
-                "new_listings",
-                0,
-            )
-        ),
-
-        "price_reductions": scanner_result.get(
-            "price_reductions",
-            0,
-        ),
-
-        "relisted_properties": scanner_result.get(
-            "relisted_properties",
-            0,
-        ),
-
-        "off_market_properties": scanner_result.get(
-            "off_market_properties",
-            0,
-        ),
-
-        "sold_properties": discovery_result.get(
-            "sold_properties",
-            0,
-        ),
-
-        "discovery_errors": discovery_result.get(
-            "errors",
-            0,
-        ),
+            ),
     }
 
 
@@ -281,45 +318,56 @@ def save_successful_run(
     update_scan_run(
         run_id=run_id,
         values={
-            "status": run_status,
-            "finished_at": utc_now_iso(),
+            "status":
+                run_status,
 
-            "properties_checked": result.get(
-                "total_properties",
-                0,
-            ),
+            "finished_at":
+                utc_now_iso(),
 
-            "new_listings": result.get(
-                "new_listings",
-                0,
-            ),
+            "properties_checked":
+                result.get(
+                    "total_properties",
+                    0,
+                ),
 
-            "price_reductions": result.get(
-                "price_reductions",
-                0,
-            ),
+            "new_listings":
+                result.get(
+                    "new_listings",
+                    0,
+                ),
 
-            "relisted_properties": result.get(
-                "relisted_properties",
-                0,
-            ),
+            "price_reductions":
+                result.get(
+                    "price_reductions",
+                    0,
+                ),
 
-            "off_market_properties": result.get(
-                "off_market_properties",
-                0,
-            ),
+            "relisted_properties":
+                result.get(
+                    "relisted_properties",
+                    0,
+                ),
 
-            "events_created": result.get(
-                "events_created",
-                0,
-            ),
+            "off_market_properties":
+                result.get(
+                    "off_market_properties",
+                    0,
+                ),
 
-            "errors_count": result.get(
-                "failed",
-                0,
-            ),
+            "events_created":
+                result.get(
+                    "events_created",
+                    0,
+                ),
 
-            "error_message": None,
+            "errors_count":
+                result.get(
+                    "failed",
+                    0,
+                ),
+
+            "error_message":
+                None,
         },
     )
 
@@ -337,12 +385,25 @@ def run_scanner(
     control_id = None
 
     try:
+        # -------------------------------------------------
+        # Read scanner state
+        # -------------------------------------------------
+
         control = get_scanner_control()
-        control_id = control["id"]
+
+        control_id = control[
+            "id"
+        ]
 
         print("")
-        print("Scanner control row found.")
-        print(f"ID: {control_id}")
+        print(
+            "Scanner control row found."
+        )
+
+        print(
+            f"ID: "
+            f"{control_id}"
+        )
 
         print(
             f"Automatic scanning enabled: "
@@ -359,11 +420,19 @@ def run_scanner(
             f"{trigger_type}"
         )
 
+        # -------------------------------------------------
+        # Check whether scanner can start
+        # -------------------------------------------------
+
         if not scanner_can_start(
             control=control,
             trigger_type=trigger_type,
         ):
             return
+
+        # -------------------------------------------------
+        # Create run
+        # -------------------------------------------------
 
         run_id = create_scan_run(
             control_id=control_id,
@@ -373,19 +442,34 @@ def run_scanner(
         update_scanner_control(
             control_id=control_id,
             values={
-                "status": "running",
-                "last_started_at": utc_now_iso(),
-                "last_error": None,
+                "status":
+                    "running",
+
+                "last_started_at":
+                    utc_now_iso(),
+
+                "last_error":
+                    None,
             },
         )
 
         print("")
-        print("Nyro scanner run started.")
-        print(f"Run ID: {run_id}")
-        print(f"Trigger type: {trigger_type}")
+        print(
+            "Nyro scanner run started."
+        )
+
+        print(
+            f"Run ID: "
+            f"{run_id}"
+        )
+
+        print(
+            f"Trigger type: "
+            f"{trigger_type}"
+        )
 
         # -------------------------------------------------
-        # Phase 1 — discovery
+        # Phase 1 — property discovery
         # -------------------------------------------------
 
         print("")
@@ -430,7 +514,7 @@ def run_scanner(
         )
 
         # -------------------------------------------------
-        # Phase 2 — monitoring
+        # Phase 2 — property monitoring
         # -------------------------------------------------
 
         print("")
@@ -449,26 +533,112 @@ def run_scanner(
             headless=True,
         )
 
+        print("")
+        print(
+            "Monitoring phase complete."
+        )
+
         # -------------------------------------------------
-        # Merge both phases
+        # Phase 3 — marketing draft generation
+        # -------------------------------------------------
+
+        print("")
+        print(
+            "========================================"
+        )
+        print(
+            "PHASE 3: MARKETING DRAFT GENERATION"
+        )
+        print(
+            "========================================"
+        )
+
+        draft_result = {
+            "drafts_created":
+                0,
+
+            "events_processed":
+                0,
+
+            "events_failed":
+                0,
+        }
+
+        try:
+            draft_result = (
+                run_draft_generation(
+                    supabase=supabase,
+                )
+            )
+
+        except Exception as draft_error:
+            print("")
+            print(
+                "Warning: Marketing draft "
+                "generation failed."
+            )
+
+            print(
+                f"Draft generation error: "
+                f"{draft_error}"
+            )
+
+        print("")
+        print(
+            "Marketing draft phase complete."
+        )
+
+        print(
+            f"Drafts created: "
+            f"{draft_result.get('drafts_created', 0)}"
+        )
+
+        print(
+            f"Marketing events processed: "
+            f"{draft_result.get('events_processed', 0)}"
+        )
+
+        print(
+            f"Marketing events failed: "
+            f"{draft_result.get('events_failed', 0)}"
+        )
+
+        # -------------------------------------------------
+        # Merge property scanner phases
         # -------------------------------------------------
 
         result = merge_results(
-            discovery_result=discovery_result,
-            scanner_result=scanner_result,
+            discovery_result=
+                discovery_result,
+
+            scanner_result=
+                scanner_result,
         )
+
+        # -------------------------------------------------
+        # Store scan statistics
+        # -------------------------------------------------
 
         run_status = save_successful_run(
             run_id=run_id,
             result=result,
         )
 
+        # -------------------------------------------------
+        # Return scanner engine to idle
+        # -------------------------------------------------
+
         update_scanner_control(
             control_id=control_id,
             values={
-                "status": "idle",
-                "last_completed_at": utc_now_iso(),
-                "last_error": None,
+                "status":
+                    "idle",
+
+                "last_completed_at":
+                    utc_now_iso(),
+
+                "last_error":
+                    None,
             },
         )
 
@@ -528,6 +698,21 @@ def run_scanner(
         )
 
         print(
+            f"Marketing drafts created: "
+            f"{draft_result.get('drafts_created', 0)}"
+        )
+
+        print(
+            f"Marketing events processed: "
+            f"{draft_result.get('events_processed', 0)}"
+        )
+
+        print(
+            f"Marketing events failed: "
+            f"{draft_result.get('events_failed', 0)}"
+        )
+
+        print(
             f"Errors: "
             f"{result.get('failed', 0)}"
         )
@@ -542,7 +727,9 @@ def run_scanner(
         )
 
     except Exception as exc:
-        error_message = str(exc)
+        error_message = str(
+            exc
+        )
 
         print("")
         print(
@@ -554,15 +741,28 @@ def run_scanner(
             f"{error_message}"
         )
 
+        print("")
+
+        # -------------------------------------------------
+        # Mark scan run failed
+        # -------------------------------------------------
+
         if run_id:
             try:
                 update_scan_run(
                     run_id=run_id,
                     values={
-                        "status": "failed",
-                        "finished_at": utc_now_iso(),
-                        "errors_count": 1,
-                        "error_message": error_message,
+                        "status":
+                            "failed",
+
+                        "finished_at":
+                            utc_now_iso(),
+
+                        "errors_count":
+                            1,
+
+                        "error_message":
+                            error_message,
                     },
                 )
 
@@ -577,13 +777,20 @@ def run_scanner(
                     f"{update_error}"
                 )
 
+        # -------------------------------------------------
+        # Mark scanner engine failed
+        # -------------------------------------------------
+
         if control_id:
             try:
                 update_scanner_control(
                     control_id=control_id,
                     values={
-                        "status": "failed",
-                        "last_error": error_message,
+                        "status":
+                            "failed",
+
+                        "last_error":
+                            error_message,
                     },
                 )
 
@@ -599,7 +806,10 @@ def run_scanner(
                 )
 
         traceback.print_exc()
-        sys.exit(1)
+
+        sys.exit(
+            1
+        )
 
 
 # ---------------------------------------------------------
