@@ -186,9 +186,22 @@ def update_property(
     property_id,
     new,
 ):
+    """
+    Update an existing property.
+
+    If a property goes off market, preserve its last known
+    property details. Only its live state and listing status
+    should change.
+
+    This ensures historical property data remains available
+    inside Nyro and prevents useful information such as the
+    title, price, description and images from being erased.
+    """
+
     now = utc_now_iso()
 
     if new.get("currently_live") is False:
+
         update_data = {
             "currently_live":
                 False,
@@ -196,32 +209,12 @@ def update_property(
             "listing_status":
                 "Off Market",
 
-            "detail_extracted":
-                False,
-
-            "title":
-                None,
-
-            "price":
-                None,
-
-            "bedrooms":
-                None,
-
-            "property_type":
-                None,
-
-            "description":
-                None,
-
-            "main_image_url":
-                None,
-
             "last_seen_at":
                 now,
         }
 
     else:
+
         update_data = {
             "currently_live":
                 True,
