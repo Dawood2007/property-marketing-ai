@@ -1,7 +1,11 @@
 import argparse
+import json
 import os
 import time
 from datetime import datetime, timezone
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -15,20 +19,44 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-PUBLISHER_POLL_SECONDS = int(os.getenv("PUBLISHER_POLL_SECONDS", "60"))
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+PUBLISHER_POLL_SECONDS = int(
+    os.getenv("PUBLISHER_POLL_SECONDS", "60")
+)
+
+META_GRAPH_BASE = "https://graph.facebook.com"
+
 
 if not SUPABASE_URL:
-    raise RuntimeError("SUPABASE_URL is missing from the environment.")
+    raise RuntimeError(
+        "SUPABASE_URL is missing from the environment."
+    )
 
 if not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_KEY is missing from the environment.")
+    raise RuntimeError(
+        "SUPABASE_KEY is missing from the environment."
+    )
+
+if not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError(
+        "SUPABASE_SERVICE_ROLE_KEY is missing from the environment."
+    )
 
 if PUBLISHER_POLL_SECONDS < 10:
-    raise RuntimeError("PUBLISHER_POLL_SECONDS must be at least 10 seconds.")
+    raise RuntimeError(
+        "PUBLISHER_POLL_SECONDS must be at least 10 seconds."
+    )
+
 
 supabase: Client = create_client(
     SUPABASE_URL.strip(),
     SUPABASE_KEY.strip(),
+)
+
+supabase_admin: Client = create_client(
+    SUPABASE_URL.strip(),
+    SUPABASE_SERVICE_ROLE_KEY.strip(),
 )
 
 
@@ -90,7 +118,10 @@ def mark_publishing(job_id: int) -> None:
     )
 
 
-def mark_published(job_id: int, external_post_id: str) -> None:
+def mark_published(
+    job_id: int,
+    external_post_id: str,
+) -> None:
     now = utc_now_iso()
 
     (
@@ -110,7 +141,10 @@ def mark_published(job_id: int, external_post_id: str) -> None:
     )
 
 
-def mark_failed(job_id: int, error_message: str) -> None:
+def mark_failed(
+    job_id: int,
+    error_message: str,
+) -> None:
     (
         supabase
         .table("publishing_jobs")
@@ -127,13 +161,319 @@ def mark_failed(job_id: int, error_message: str) -> None:
 
 
 # ---------------------------------------------------------
-# Mock social publisher
+# Draft helpers
 # ---------------------------------------------------------
 
-def mock_publish(job: dict) -> str:
-    platform = job.get("platform", "unknown")
-    draft_id = job.get("marketing_draft_id")
-    job_id = job.get("id")
+def get_marketing_draft(
+    draft_id: int,
+) -> dict:
+    response = (
+        supabase_admin
+        .table("marketing_drafts")
+        .select("*")
+        .eq("id", draft_id)
+        .limit(1)
+        .execute()
+    )
+
+    rows = response.data or []
+
+    if not rows:
+        raise RuntimeError(
+            f"Marketing draft {draft_id} was not found."
+        )
+
+    return rows[0]
+
+
+def get_draft_text(
+    draft_id: int,
+) -> str:
+    draft = get_marketing_draft(
+        draft_id
+    )
+
+    draft_text = draft.get(
+        "draft_text"
+    )
+
+    if not isinstance(
+        draft_text,
+        str,
+    ):
+        raise RuntimeError(
+            f"Marketing draft {draft_id} has no draft_text."
+        )
+
+    draft_text = draft_text.strip()
+
+    if not draft_text:
+        raise RuntimeError(
+            f"Marketing draft {draft_id} has empty draft_text."
+        )
+
+    return draft_text
+
+
+# ---------------------------------------------------------
+# Social connection helpers
+# ---------------------------------------------------------
+
+def get_connected_facebook_page() -> dict:
+    response = (
+        supabase_admin
+        .table("social_connections")
+        .select(
+            "id,"
+            "platform,"
+            "account_name,"
+            "external_account_id,"
+            "access_token,"
+            "token_expires_at,"
+            "is_connected,"
+            "updated_at"
+        )
+        .eq(
+            "platform",
+            "Facebook",
+        )
+        .eq(
+            "is_connected",
+            True,
+        )
+        .order(
+            "updated_at",
+            desc=True,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    rows = response.data or []
+
+    if not rows:
+        raise RuntimeError(
+            "No connected Facebook Page was found."
+        )
+
+    connection = rows[0]
+
+    page_id = connection.get(
+        "external_account_id"
+    )
+
+    access_token = connection.get(
+        "access_token"
+    )
+
+    if not page_id:
+        raise RuntimeError(
+            "Connected Facebook Page has no external_account_id."
+        )
+
+    if not access_token:
+        raise RuntimeError(
+            "Connected Facebook Page has no access token."
+        )
+
+    return connection
+
+
+# ---------------------------------------------------------
+# Meta API helper
+# ---------------------------------------------------------
+
+def meta_post(
+    path: str,
+    form_data: dict[str, str],
+) -> dict:
+    url = (
+        f"{META_GRAPH_BASE}"
+        f"/{path.lstrip('/')}"
+    )
+
+    encoded_data = urlencode(
+        form_data
+    ).encode("utf-8")
+
+    request = Request(
+        url=url,
+        data=encoded_data,
+        method="POST",
+        headers={
+            "Content-Type":
+                "application/x-www-form-urlencoded",
+            "Accept":
+                "application/json",
+        },
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=30,
+        ) as response:
+            body = response.read().decode(
+                "utf-8"
+            )
+
+    except HTTPError as exc:
+        error_body = exc.read().decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        try:
+            payload = json.loads(
+                error_body
+            )
+
+            meta_message = (
+                payload
+                .get("error", {})
+                .get("message")
+            )
+
+        except Exception:
+            meta_message = None
+
+        if meta_message:
+            raise RuntimeError(
+                f"Meta API error: {meta_message}"
+            ) from exc
+
+        raise RuntimeError(
+            f"Meta API HTTP {exc.code}: {error_body}"
+        ) from exc
+
+    except URLError as exc:
+        raise RuntimeError(
+            f"Unable to contact Meta API: {exc.reason}"
+        ) from exc
+
+    try:
+        payload = json.loads(
+            body
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Meta returned invalid JSON: {body}"
+        ) from exc
+
+    if "error" in payload:
+        error = payload.get(
+            "error",
+            {}
+        )
+
+        raise RuntimeError(
+            "Meta API error: "
+            f"{error.get('message', 'Unknown Meta error')}"
+        )
+
+    return payload
+
+
+# ---------------------------------------------------------
+# Real Facebook publisher
+# ---------------------------------------------------------
+
+def publish_facebook(
+    job: dict,
+) -> str:
+    draft_id = job.get(
+        "marketing_draft_id"
+    )
+
+    if not draft_id:
+        raise RuntimeError(
+            "Publishing job has no marketing_draft_id."
+        )
+
+    message = get_draft_text(
+        int(draft_id)
+    )
+
+    connection = (
+        get_connected_facebook_page()
+    )
+
+    page_id = str(
+        connection[
+            "external_account_id"
+        ]
+    )
+
+    access_token = str(
+        connection[
+            "access_token"
+        ]
+    )
+
+    account_name = (
+        connection.get(
+            "account_name"
+        )
+        or "Facebook Page"
+    )
+
+    print(
+        f"Publishing to Facebook Page: "
+        f"{account_name}"
+    )
+
+    print(
+        f"Facebook Page ID: "
+        f"{page_id}"
+    )
+
+    payload = meta_post(
+        f"{page_id}/feed",
+        {
+            "message": message,
+            "access_token":
+                access_token,
+        },
+    )
+
+    external_post_id = payload.get(
+        "id"
+    )
+
+    if not external_post_id:
+        raise RuntimeError(
+            "Meta reported success but returned no Facebook post ID."
+        )
+
+    print(
+        f"Facebook post created: "
+        f"{external_post_id}"
+    )
+
+    return str(
+        external_post_id
+    )
+
+
+# ---------------------------------------------------------
+# Temporary mock publisher
+# ---------------------------------------------------------
+
+def mock_publish(
+    job: dict,
+) -> str:
+    platform = job.get(
+        "platform",
+        "unknown",
+    )
+
+    draft_id = job.get(
+        "marketing_draft_id"
+    )
+
+    job_id = job.get(
+        "id"
+    )
 
     print(
         f"[MOCK PUBLISH] "
@@ -142,33 +482,92 @@ def mock_publish(job: dict) -> str:
         f"job_id={job_id}"
     )
 
-    return f"mock-{platform.lower()}-{job_id}"
+    return (
+        f"mock-"
+        f"{platform.lower()}-"
+        f"{job_id}"
+    )
+
+
+# ---------------------------------------------------------
+# Platform router
+# ---------------------------------------------------------
+
+def publish_job(
+    job: dict,
+) -> str:
+    platform = str(
+        job.get(
+            "platform",
+            "",
+        )
+    ).strip().lower()
+
+    if platform == "facebook":
+        return publish_facebook(
+            job
+        )
+
+    if platform in {
+        "instagram",
+        "tiktok",
+    }:
+        return mock_publish(
+            job
+        )
+
+    raise RuntimeError(
+        f"Unsupported publishing platform: "
+        f"{platform or 'unknown'}"
+    )
 
 
 # ---------------------------------------------------------
 # Process one job
 # ---------------------------------------------------------
 
-def process_job(job: dict) -> None:
+def process_job(
+    job: dict,
+) -> None:
     job_id = job["id"]
 
     try:
         print("")
-        print(f"Processing publishing job {job_id}")
+        print(
+            f"Processing publishing job "
+            f"{job_id}"
+        )
 
-        mark_publishing(job_id)
+        print(
+            f"Platform: "
+            f"{job.get('platform')}"
+        )
 
-        external_post_id = mock_publish(job)
+        mark_publishing(
+            job_id
+        )
+
+        external_post_id = (
+            publish_job(
+                job
+            )
+        )
 
         mark_published(
             job_id=job_id,
-            external_post_id=external_post_id,
+            external_post_id=
+                external_post_id,
         )
 
-        print(f"Publishing job {job_id} completed.")
+        print(
+            f"Publishing job "
+            f"{job_id} completed."
+        )
 
     except Exception as exc:
-        error_message = str(exc)
+        error_message = str(
+            exc
+        )
 
         print(
             f"Publishing job "
@@ -179,11 +578,20 @@ def process_job(job: dict) -> None:
         try:
             mark_failed(
                 job_id=job_id,
-                error_message=error_message,
+                error_message=
+                    error_message,
             )
+
         except Exception as update_error:
-            print("Warning: failed job could not be updated.")
-            print(f"Update error: {update_error}")
+            print(
+                "Warning: failed job "
+                "could not be updated."
+            )
+
+            print(
+                f"Update error: "
+                f"{update_error}"
+            )
 
 
 # ---------------------------------------------------------
@@ -192,46 +600,86 @@ def process_job(job: dict) -> None:
 
 def run_publisher() -> None:
     print("")
-    print("========================================")
-    print("NYRO PUBLISHER")
-    print("========================================")
+    print(
+        "========================================"
+    )
+    print(
+        "NYRO PUBLISHER"
+    )
+    print(
+        "========================================"
+    )
 
     print("")
-    print("Checking for publishing jobs...")
+    print(
+        "Checking for publishing jobs..."
+    )
 
     jobs = get_due_jobs()
 
     if not jobs:
-        print("No publishing jobs ready.")
+        print(
+            "No publishing jobs ready."
+        )
         return
 
-    print(f"Found {len(jobs)} publishing job(s).")
+    print(
+        f"Found {len(jobs)} "
+        f"publishing job(s)."
+    )
 
     for job in jobs:
-        process_job(job)
+        process_job(
+            job
+        )
 
     print("")
-    print("Publisher run finished.")
+    print(
+        "Publisher run finished."
+    )
 
 
 def run_publisher_loop() -> None:
     print("")
-    print("========================================")
-    print("NYRO PUBLISHER WORKER STARTED")
-    print("========================================")
-    print(f"Polling every {PUBLISHER_POLL_SECONDS} seconds.")
+    print(
+        "========================================"
+    )
+    print(
+        "NYRO PUBLISHER WORKER STARTED"
+    )
+    print(
+        "========================================"
+    )
+
+    print(
+        f"Polling every "
+        f"{PUBLISHER_POLL_SECONDS} "
+        f"seconds."
+    )
 
     while True:
         try:
             run_publisher()
+
         except Exception as exc:
             print("")
-            print("Publisher cycle failed:")
-            print(str(exc))
+            print(
+                "Publisher cycle failed:"
+            )
+            print(
+                str(exc)
+            )
 
         print("")
-        print(f"Waiting {PUBLISHER_POLL_SECONDS} seconds...")
-        time.sleep(PUBLISHER_POLL_SECONDS)
+        print(
+            f"Waiting "
+            f"{PUBLISHER_POLL_SECONDS} "
+            f"seconds..."
+        )
+
+        time.sleep(
+            PUBLISHER_POLL_SECONDS
+        )
 
 
 # ---------------------------------------------------------
@@ -240,13 +688,16 @@ def run_publisher_loop() -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Nyro publishing worker"
+        description=
+            "Nyro publishing worker"
     )
 
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Run one publishing check and exit.",
+        help=
+            "Run one publishing check "
+            "and exit.",
     )
 
     args = parser.parse_args()
