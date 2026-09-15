@@ -1,10 +1,20 @@
 import hashlib
+import mimetypes
+import os
+import ssl
 from datetime import datetime, UTC
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+import certifi
 
 
 # ---------------------------------------------------------
 # General helpers
 # ---------------------------------------------------------
+
+PROPERTY_IMAGES_BUCKET = "property-images"
+
 
 def utc_now_iso():
     return datetime.now(UTC).isoformat()
@@ -328,6 +338,175 @@ def mark_property_sold(
 
 
 # ---------------------------------------------------------
+# Property image storage helpers
+# ---------------------------------------------------------
+
+def get_existing_property_images(
+    supabase,
+    property_id,
+):
+    response = (
+        supabase
+        .table("property_images")
+        .select(
+            "id,"
+            "property_listing_id,"
+            "image_url,"
+            "stored_image_url,"
+            "image_order"
+        )
+        .eq(
+            "property_listing_id",
+            property_id,
+        )
+        .execute()
+    )
+
+    return response.data or []
+
+
+def get_existing_stored_image_map(
+    existing_images,
+):
+    stored_map = {}
+
+    for image in existing_images:
+        source_url = image.get(
+            "image_url"
+        )
+
+        stored_url = image.get(
+            "stored_image_url"
+        )
+
+        if source_url and stored_url:
+            stored_map[source_url] = stored_url
+
+    return stored_map
+
+
+def download_property_image(
+    image_url,
+):
+    request = Request(
+        image_url,
+        headers={
+            "User-Agent":
+                "Mozilla/5.0 Nyro/1.0"
+        },
+    )
+
+    ssl_context = ssl.create_default_context(
+        cafile=certifi.where()
+    )
+
+    with urlopen(
+        request,
+        timeout=30,
+        context=ssl_context,
+    ) as response:
+        image_bytes = response.read()
+
+        content_type = (
+            response
+            .headers
+            .get_content_type()
+        )
+
+    if not image_bytes:
+        raise RuntimeError(
+            "Downloaded property image was empty."
+        )
+
+    if not content_type.startswith(
+        "image/"
+    ):
+        raise RuntimeError(
+            "Property image URL did not return "
+            f"an image. Content type: {content_type}"
+        )
+
+    return image_bytes, content_type
+
+
+def get_image_extension(
+    image_url,
+    content_type,
+):
+    extension = mimetypes.guess_extension(
+        content_type
+    )
+
+    if not extension:
+        parsed_url = urlparse(
+            image_url
+        )
+
+        extension = os.path.splitext(
+            parsed_url.path
+        )[1]
+
+    if not extension:
+        extension = ".jpg"
+
+    if extension == ".jpe":
+        extension = ".jpg"
+
+    return extension
+
+
+def store_property_image(
+    supabase,
+    property_id,
+    image_order,
+    image_url,
+):
+    image_bytes, content_type = (
+        download_property_image(
+            image_url
+        )
+    )
+
+    extension = get_image_extension(
+        image_url,
+        content_type,
+    )
+
+    storage_path = (
+        f"{property_id}/"
+        f"{image_order}{extension}"
+    )
+
+    (
+        supabase
+        .storage
+        .from_(PROPERTY_IMAGES_BUCKET)
+        .upload(
+            path=storage_path,
+            file=image_bytes,
+            file_options={
+                "content-type":
+                    content_type,
+
+                "upsert":
+                    "true",
+            },
+        )
+    )
+
+    public_url = (
+        supabase
+        .storage
+        .from_(PROPERTY_IMAGES_BUCKET)
+        .get_public_url(
+            storage_path
+        )
+    )
+
+    return public_url
+
+
+# ---------------------------------------------------------
 # Property images
 # ---------------------------------------------------------
 
@@ -336,6 +515,89 @@ def refresh_property_images(
     property_id,
     image_urls,
 ):
+    """
+    Refresh a property's image records.
+
+    The original agency/CRM image URL is retained in
+    image_url.
+
+    Nyro also stores its own copy in Supabase Storage and
+    records that public URL in stored_image_url.
+
+    If an original source URL has already been stored by
+    Nyro, the existing stored copy is reused instead of
+    downloading and uploading it again.
+    """
+
+    image_urls = image_urls or []
+
+    existing_images = (
+        get_existing_property_images(
+            supabase,
+            property_id,
+        )
+    )
+
+    stored_image_map = (
+        get_existing_stored_image_map(
+            existing_images
+        )
+    )
+
+    new_image_rows = []
+
+    for index, image_url in enumerate(
+        image_urls
+    ):
+        image_order = index + 1
+
+        stored_image_url = (
+            stored_image_map.get(
+                image_url
+            )
+        )
+
+        if stored_image_url:
+            print(
+                f"Reusing stored image "
+                f"{image_order} for "
+                f"property {property_id}"
+            )
+
+        else:
+            print(
+                f"Storing image "
+                f"{image_order} for "
+                f"property {property_id}"
+            )
+
+            stored_image_url = (
+                store_property_image(
+                    supabase,
+                    property_id,
+                    image_order,
+                    image_url,
+                )
+            )
+
+        new_image_rows.append(
+            {
+                "property_listing_id":
+                    property_id,
+
+                "image_url":
+                    image_url,
+
+                "stored_image_url":
+                    stored_image_url,
+
+                "image_order":
+                    image_order,
+            }
+        )
+
+    # Only replace the database rows after all new images
+    # have been prepared successfully.
     (
         supabase
         .table("property_images")
@@ -347,23 +609,12 @@ def refresh_property_images(
         .execute()
     )
 
-    for index, image_url in enumerate(
-        image_urls or []
-    ):
+    if new_image_rows:
         (
             supabase
             .table("property_images")
             .insert(
-                {
-                    "property_listing_id":
-                        property_id,
-
-                    "image_url":
-                        image_url,
-
-                    "image_order":
-                        index + 1,
-                }
+                new_image_rows
             )
             .execute()
         )
