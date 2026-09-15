@@ -19,13 +19,17 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY"
+)
 
 PUBLISHER_POLL_SECONDS = int(
     os.getenv("PUBLISHER_POLL_SECONDS", "60")
 )
 
 META_GRAPH_BASE = "https://graph.facebook.com"
+
+MAX_FACEBOOK_IMAGES = 10
 
 
 if not SUPABASE_URL:
@@ -61,7 +65,7 @@ supabase_admin: Client = create_client(
 
 
 # ---------------------------------------------------------
-# Helpers
+# General helpers
 # ---------------------------------------------------------
 
 def utc_now_iso() -> str:
@@ -102,7 +106,9 @@ def get_due_jobs() -> list[dict]:
 # Job status helpers
 # ---------------------------------------------------------
 
-def mark_publishing(job_id: int) -> None:
+def mark_publishing(
+    job_id: int,
+) -> None:
     (
         supabase
         .table("publishing_jobs")
@@ -216,6 +222,56 @@ def get_draft_text(
 
 
 # ---------------------------------------------------------
+# Property image helpers
+# ---------------------------------------------------------
+
+def get_property_images(
+    property_listing_id: int,
+) -> list[str]:
+    response = (
+        supabase_admin
+        .table("property_images")
+        .select(
+            "stored_image_url,"
+            "image_order"
+        )
+        .eq(
+            "property_listing_id",
+            property_listing_id,
+        )
+        .order(
+            "image_order"
+        )
+        .execute()
+    )
+
+    rows = response.data or []
+
+    image_urls = []
+
+    for row in rows:
+        stored_image_url = row.get(
+            "stored_image_url"
+        )
+
+        if not stored_image_url:
+            continue
+
+        stored_image_url = str(
+            stored_image_url
+        ).strip()
+
+        if stored_image_url:
+            image_urls.append(
+                stored_image_url
+            )
+
+    return image_urls[
+        :MAX_FACEBOOK_IMAGES
+    ]
+
+
+# ---------------------------------------------------------
 # Social connection helpers
 # ---------------------------------------------------------
 
@@ -285,7 +341,7 @@ def get_connected_facebook_page() -> dict:
 
 def meta_post(
     path: str,
-    form_data: dict[str, str],
+    form_data: dict,
 ) -> dict:
     url = (
         f"{META_GRAPH_BASE}"
@@ -311,7 +367,7 @@ def meta_post(
     try:
         with urlopen(
             request,
-            timeout=30,
+            timeout=60,
         ) as response:
             body = response.read().decode(
                 "utf-8"
@@ -328,36 +384,69 @@ def meta_post(
                 error_body
             )
 
-            meta_message = (
-                payload
-                .get("error", {})
-                .get("message")
+            error = payload.get(
+                "error",
+                {}
+            )
+
+            meta_message = error.get(
+                "message"
+            )
+
+            meta_code = error.get(
+                "code"
+            )
+
+            meta_subcode = error.get(
+                "error_subcode"
             )
 
         except Exception:
             meta_message = None
+            meta_code = None
+            meta_subcode = None
 
         if meta_message:
+            details = (
+                f"Meta API error: "
+                f"{meta_message}"
+            )
+
+            if meta_code is not None:
+                details += (
+                    f" (code {meta_code}"
+                )
+
+                if meta_subcode is not None:
+                    details += (
+                        f", subcode "
+                        f"{meta_subcode}"
+                    )
+
+                details += ")"
+
             raise RuntimeError(
-                f"Meta API error: {meta_message}"
+                details
             ) from exc
 
         raise RuntimeError(
-            f"Meta API HTTP {exc.code}: {error_body}"
+            f"Meta API HTTP {exc.code}."
         ) from exc
 
     except URLError as exc:
         raise RuntimeError(
-            f"Unable to contact Meta API: {exc.reason}"
+            f"Unable to contact Meta API: "
+            f"{exc.reason}"
         ) from exc
 
     try:
         payload = json.loads(
             body
         )
+
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"Meta returned invalid JSON: {body}"
+            "Meta returned invalid JSON."
         ) from exc
 
     if "error" in payload:
@@ -375,6 +464,121 @@ def meta_post(
 
 
 # ---------------------------------------------------------
+# Facebook photo helpers
+# ---------------------------------------------------------
+
+def upload_facebook_photo(
+    page_id: str,
+    access_token: str,
+    image_url: str,
+) -> str:
+    payload = meta_post(
+        f"{page_id}/photos",
+        {
+            "url":
+                image_url,
+
+            "published":
+                "false",
+
+            "access_token":
+                access_token,
+        },
+    )
+
+    photo_id = payload.get(
+        "id"
+    )
+
+    if not photo_id:
+        raise RuntimeError(
+            "Meta uploaded a Facebook photo "
+            "but returned no photo ID."
+        )
+
+    return str(
+        photo_id
+    )
+
+
+def create_facebook_multi_photo_post(
+    page_id: str,
+    access_token: str,
+    message: str,
+    photo_ids: list[str],
+) -> str:
+    form_data = {
+        "message":
+            message,
+
+        "access_token":
+            access_token,
+    }
+
+    for index, photo_id in enumerate(
+        photo_ids
+    ):
+        form_data[
+            f"attached_media[{index}]"
+        ] = json.dumps(
+            {
+                "media_fbid":
+                    photo_id
+            }
+        )
+
+    payload = meta_post(
+        f"{page_id}/feed",
+        form_data,
+    )
+
+    external_post_id = payload.get(
+        "id"
+    )
+
+    if not external_post_id:
+        raise RuntimeError(
+            "Meta created the Facebook post "
+            "but returned no post ID."
+        )
+
+    return str(
+        external_post_id
+    )
+
+
+def create_facebook_text_post(
+    page_id: str,
+    access_token: str,
+    message: str,
+) -> str:
+    payload = meta_post(
+        f"{page_id}/feed",
+        {
+            "message":
+                message,
+
+            "access_token":
+                access_token,
+        },
+    )
+
+    external_post_id = payload.get(
+        "id"
+    )
+
+    if not external_post_id:
+        raise RuntimeError(
+            "Meta created the Facebook post "
+            "but returned no post ID."
+        )
+
+    return str(
+        external_post_id
+    )
+
+
+# ---------------------------------------------------------
 # Real Facebook publisher
 # ---------------------------------------------------------
 
@@ -385,9 +589,18 @@ def publish_facebook(
         "marketing_draft_id"
     )
 
+    property_listing_id = job.get(
+        "property_listing_id"
+    )
+
     if not draft_id:
         raise RuntimeError(
             "Publishing job has no marketing_draft_id."
+        )
+
+    if not property_listing_id:
+        raise RuntimeError(
+            "Publishing job has no property_listing_id."
         )
 
     message = get_draft_text(
@@ -427,32 +640,105 @@ def publish_facebook(
         f"{page_id}"
     )
 
-    payload = meta_post(
-        f"{page_id}/feed",
-        {
-            "message": message,
-            "access_token":
-                access_token,
-        },
+    image_urls = get_property_images(
+        int(property_listing_id)
     )
-
-    external_post_id = payload.get(
-        "id"
-    )
-
-    if not external_post_id:
-        raise RuntimeError(
-            "Meta reported success but returned no Facebook post ID."
-        )
 
     print(
-        f"Facebook post created: "
+        f"Found {len(image_urls)} "
+        f"stored property image(s)."
+    )
+
+    # -----------------------------------------------------
+    # No stored images
+    # -----------------------------------------------------
+
+    if not image_urls:
+        print(
+            "No stored property images found."
+        )
+
+        print(
+            "Publishing text-only Facebook post."
+        )
+
+        external_post_id = (
+            create_facebook_text_post(
+                page_id=page_id,
+                access_token=access_token,
+                message=message,
+            )
+        )
+
+        print(
+            f"Facebook post created: "
+            f"{external_post_id}"
+        )
+
+        return external_post_id
+
+    # -----------------------------------------------------
+    # Upload property images as unpublished Facebook photos
+    # -----------------------------------------------------
+
+    photo_ids = []
+
+    for index, image_url in enumerate(
+        image_urls,
+        start=1,
+    ):
+        print(
+            f"Uploading Facebook photo "
+            f"{index}/{len(image_urls)}..."
+        )
+
+        photo_id = (
+            upload_facebook_photo(
+                page_id=page_id,
+                access_token=access_token,
+                image_url=image_url,
+            )
+        )
+
+        photo_ids.append(
+            photo_id
+        )
+
+        print(
+            f"Facebook photo "
+            f"{index} uploaded."
+        )
+
+    if not photo_ids:
+        raise RuntimeError(
+            "Property images existed but no "
+            "Facebook photo IDs were created."
+        )
+
+    # -----------------------------------------------------
+    # Create one post containing caption + all photos
+    # -----------------------------------------------------
+
+    print(
+        f"Creating Facebook post with "
+        f"{len(photo_ids)} photo(s)..."
+    )
+
+    external_post_id = (
+        create_facebook_multi_photo_post(
+            page_id=page_id,
+            access_token=access_token,
+            message=message,
+            photo_ids=photo_ids,
+        )
+    )
+
+    print(
+        f"Facebook multi-photo post created: "
         f"{external_post_id}"
     )
 
-    return str(
-        external_post_id
-    )
+    return external_post_id
 
 
 # ---------------------------------------------------------
@@ -533,6 +819,7 @@ def process_job(
 
     try:
         print("")
+
         print(
             f"Processing publishing job "
             f"{job_id}"
@@ -600,17 +887,21 @@ def process_job(
 
 def run_publisher() -> None:
     print("")
+
     print(
         "========================================"
     )
+
     print(
         "NYRO PUBLISHER"
     )
+
     print(
         "========================================"
     )
 
     print("")
+
     print(
         "Checking for publishing jobs..."
     )
@@ -634,6 +925,7 @@ def run_publisher() -> None:
         )
 
     print("")
+
     print(
         "Publisher run finished."
     )
@@ -641,12 +933,15 @@ def run_publisher() -> None:
 
 def run_publisher_loop() -> None:
     print("")
+
     print(
         "========================================"
     )
+
     print(
         "NYRO PUBLISHER WORKER STARTED"
     )
+
     print(
         "========================================"
     )
@@ -663,14 +958,17 @@ def run_publisher_loop() -> None:
 
         except Exception as exc:
             print("")
+
             print(
                 "Publisher cycle failed:"
             )
+
             print(
                 str(exc)
             )
 
         print("")
+
         print(
             f"Waiting "
             f"{PUBLISHER_POLL_SECONDS} "
