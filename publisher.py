@@ -30,6 +30,10 @@ PUBLISHER_POLL_SECONDS = int(
 META_GRAPH_BASE = "https://graph.facebook.com"
 
 MAX_FACEBOOK_IMAGES = 10
+MAX_INSTAGRAM_IMAGES = 10
+
+INSTAGRAM_CONTAINER_TIMEOUT_SECONDS = 120
+INSTAGRAM_CONTAINER_POLL_SECONDS = 3
 
 
 if not SUPABASE_URL:
@@ -227,6 +231,7 @@ def get_draft_text(
 
 def get_property_images(
     property_listing_id: int,
+    max_images: int,
 ) -> list[str]:
     response = (
         supabase_admin
@@ -266,16 +271,16 @@ def get_property_images(
                 stored_image_url
             )
 
-    return image_urls[
-        :MAX_FACEBOOK_IMAGES
-    ]
+    return image_urls[:max_images]
 
 
 # ---------------------------------------------------------
 # Social connection helpers
 # ---------------------------------------------------------
 
-def get_connected_facebook_page() -> dict:
+def get_connected_social_account(
+    platform: str,
+) -> dict:
     response = (
         supabase_admin
         .table("social_connections")
@@ -291,7 +296,7 @@ def get_connected_facebook_page() -> dict:
         )
         .eq(
             "platform",
-            "Facebook",
+            platform,
         )
         .eq(
             "is_connected",
@@ -309,12 +314,12 @@ def get_connected_facebook_page() -> dict:
 
     if not rows:
         raise RuntimeError(
-            "No connected Facebook Page was found."
+            f"No connected {platform} account was found."
         )
 
     connection = rows[0]
 
-    page_id = connection.get(
+    external_account_id = connection.get(
         "external_account_id"
     )
 
@@ -322,22 +327,86 @@ def get_connected_facebook_page() -> dict:
         "access_token"
     )
 
-    if not page_id:
+    if not external_account_id:
         raise RuntimeError(
-            "Connected Facebook Page has no external_account_id."
+            f"Connected {platform} account has "
+            "no external_account_id."
         )
 
     if not access_token:
         raise RuntimeError(
-            "Connected Facebook Page has no access token."
+            f"Connected {platform} account has "
+            "no access token."
         )
 
     return connection
 
 
+def get_connected_facebook_page() -> dict:
+    return get_connected_social_account(
+        "Facebook"
+    )
+
+
+def get_connected_instagram_account() -> dict:
+    return get_connected_social_account(
+        "Instagram"
+    )
+
+
 # ---------------------------------------------------------
-# Meta API helper
+# Meta API helpers
 # ---------------------------------------------------------
+
+def parse_meta_error(
+    error_body: str,
+) -> str:
+    try:
+        payload = json.loads(
+            error_body
+        )
+
+        error = payload.get(
+            "error",
+            {}
+        )
+
+        message = error.get(
+            "message"
+        )
+
+        code = error.get(
+            "code"
+        )
+
+        subcode = error.get(
+            "error_subcode"
+        )
+
+        if message:
+            details = (
+                f"Meta API error: {message}"
+            )
+
+            if code is not None:
+                details += (
+                    f" (code {code}"
+                )
+
+                if subcode is not None:
+                    details += (
+                        f", subcode {subcode}"
+                    )
+
+                details += ")"
+
+            return details
+
+    except Exception:
+        pass
+
+    return "Meta API request failed."
+
 
 def meta_post(
     path: str,
@@ -379,58 +448,10 @@ def meta_post(
             errors="replace",
         )
 
-        try:
-            payload = json.loads(
+        raise RuntimeError(
+            parse_meta_error(
                 error_body
             )
-
-            error = payload.get(
-                "error",
-                {}
-            )
-
-            meta_message = error.get(
-                "message"
-            )
-
-            meta_code = error.get(
-                "code"
-            )
-
-            meta_subcode = error.get(
-                "error_subcode"
-            )
-
-        except Exception:
-            meta_message = None
-            meta_code = None
-            meta_subcode = None
-
-        if meta_message:
-            details = (
-                f"Meta API error: "
-                f"{meta_message}"
-            )
-
-            if meta_code is not None:
-                details += (
-                    f" (code {meta_code}"
-                )
-
-                if meta_subcode is not None:
-                    details += (
-                        f", subcode "
-                        f"{meta_subcode}"
-                    )
-
-                details += ")"
-
-            raise RuntimeError(
-                details
-            ) from exc
-
-        raise RuntimeError(
-            f"Meta API HTTP {exc.code}."
         ) from exc
 
     except URLError as exc:
@@ -450,14 +471,80 @@ def meta_post(
         ) from exc
 
     if "error" in payload:
-        error = payload.get(
-            "error",
-            {}
+        raise RuntimeError(
+            parse_meta_error(
+                body
+            )
+        )
+
+    return payload
+
+
+def meta_get(
+    path: str,
+    query_data: dict,
+) -> dict:
+    query_string = urlencode(
+        query_data
+    )
+
+    url = (
+        f"{META_GRAPH_BASE}"
+        f"/{path.lstrip('/')}?"
+        f"{query_string}"
+    )
+
+    request = Request(
+        url=url,
+        method="GET",
+        headers={
+            "Accept":
+                "application/json",
+        },
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=60,
+        ) as response:
+            body = response.read().decode(
+                "utf-8"
+            )
+
+    except HTTPError as exc:
+        error_body = exc.read().decode(
+            "utf-8",
+            errors="replace",
         )
 
         raise RuntimeError(
-            "Meta API error: "
-            f"{error.get('message', 'Unknown Meta error')}"
+            parse_meta_error(
+                error_body
+            )
+        ) from exc
+
+    except URLError as exc:
+        raise RuntimeError(
+            f"Unable to contact Meta API: "
+            f"{exc.reason}"
+        ) from exc
+
+    try:
+        payload = json.loads(
+            body
+        )
+
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Meta returned invalid JSON."
+        ) from exc
+
+    if "error" in payload:
+        raise RuntimeError(
+            parse_meta_error(
+                body
+            )
         )
 
     return payload
@@ -641,17 +728,14 @@ def publish_facebook(
     )
 
     image_urls = get_property_images(
-        int(property_listing_id)
+        int(property_listing_id),
+        MAX_FACEBOOK_IMAGES,
     )
 
     print(
         f"Found {len(image_urls)} "
         f"stored property image(s)."
     )
-
-    # -----------------------------------------------------
-    # No stored images
-    # -----------------------------------------------------
 
     if not image_urls:
         print(
@@ -676,10 +760,6 @@ def publish_facebook(
         )
 
         return external_post_id
-
-    # -----------------------------------------------------
-    # Upload property images as unpublished Facebook photos
-    # -----------------------------------------------------
 
     photo_ids = []
 
@@ -709,16 +789,6 @@ def publish_facebook(
             f"{index} uploaded."
         )
 
-    if not photo_ids:
-        raise RuntimeError(
-            "Property images existed but no "
-            "Facebook photo IDs were created."
-        )
-
-    # -----------------------------------------------------
-    # Create one post containing caption + all photos
-    # -----------------------------------------------------
-
     print(
         f"Creating Facebook post with "
         f"{len(photo_ids)} photo(s)..."
@@ -739,6 +809,423 @@ def publish_facebook(
     )
 
     return external_post_id
+
+
+# ---------------------------------------------------------
+# Instagram container helpers
+# ---------------------------------------------------------
+
+def create_instagram_image_container(
+    instagram_account_id: str,
+    access_token: str,
+    image_url: str,
+    is_carousel_item: bool,
+) -> str:
+    form_data = {
+        "image_url":
+            image_url,
+
+        "access_token":
+            access_token,
+    }
+
+    if is_carousel_item:
+        form_data[
+            "is_carousel_item"
+        ] = "true"
+
+    payload = meta_post(
+        f"{instagram_account_id}/media",
+        form_data,
+    )
+
+    creation_id = payload.get(
+        "id"
+    )
+
+    if not creation_id:
+        raise RuntimeError(
+            "Meta created an Instagram media "
+            "container but returned no ID."
+        )
+
+    return str(
+        creation_id
+    )
+
+
+def create_instagram_carousel_container(
+    instagram_account_id: str,
+    access_token: str,
+    caption: str,
+    child_ids: list[str],
+) -> str:
+    payload = meta_post(
+        f"{instagram_account_id}/media",
+        {
+            "media_type":
+                "CAROUSEL",
+
+            "children":
+                ",".join(child_ids),
+
+            "caption":
+                caption,
+
+            "access_token":
+                access_token,
+        },
+    )
+
+    creation_id = payload.get(
+        "id"
+    )
+
+    if not creation_id:
+        raise RuntimeError(
+            "Meta created an Instagram carousel "
+            "container but returned no ID."
+        )
+
+    return str(
+        creation_id
+    )
+
+
+def get_instagram_container_status(
+    container_id: str,
+    access_token: str,
+) -> str:
+    payload = meta_get(
+        container_id,
+        {
+            "fields":
+                "status_code",
+
+            "access_token":
+                access_token,
+        },
+    )
+
+    status_code = payload.get(
+        "status_code"
+    )
+
+    if not status_code:
+        return "UNKNOWN"
+
+    return str(
+        status_code
+    ).upper()
+
+
+def wait_for_instagram_container(
+    container_id: str,
+    access_token: str,
+) -> None:
+    started_at = time.monotonic()
+
+    while True:
+        status = (
+            get_instagram_container_status(
+                container_id,
+                access_token,
+            )
+        )
+
+        if status == "FINISHED":
+            return
+
+        if status in {
+            "ERROR",
+            "EXPIRED",
+        }:
+            raise RuntimeError(
+                "Instagram media container "
+                f"{container_id} entered "
+                f"status {status}."
+            )
+
+        elapsed = (
+            time.monotonic()
+            - started_at
+        )
+
+        if (
+            elapsed
+            >= INSTAGRAM_CONTAINER_TIMEOUT_SECONDS
+        ):
+            raise RuntimeError(
+                "Timed out waiting for Instagram "
+                f"media container {container_id}. "
+                f"Last status: {status}."
+            )
+
+        time.sleep(
+            INSTAGRAM_CONTAINER_POLL_SECONDS
+        )
+
+
+def publish_instagram_container(
+    instagram_account_id: str,
+    access_token: str,
+    creation_id: str,
+) -> str:
+    payload = meta_post(
+        f"{instagram_account_id}/media_publish",
+        {
+            "creation_id":
+                creation_id,
+
+            "access_token":
+                access_token,
+        },
+    )
+
+    media_id = payload.get(
+        "id"
+    )
+
+    if not media_id:
+        raise RuntimeError(
+            "Meta published Instagram media "
+            "but returned no media ID."
+        )
+
+    return str(
+        media_id
+    )
+
+
+# ---------------------------------------------------------
+# Real Instagram publisher
+# ---------------------------------------------------------
+
+def publish_instagram(
+    job: dict,
+) -> str:
+    draft_id = job.get(
+        "marketing_draft_id"
+    )
+
+    property_listing_id = job.get(
+        "property_listing_id"
+    )
+
+    if not draft_id:
+        raise RuntimeError(
+            "Publishing job has no marketing_draft_id."
+        )
+
+    if not property_listing_id:
+        raise RuntimeError(
+            "Publishing job has no property_listing_id."
+        )
+
+    caption = get_draft_text(
+        int(draft_id)
+    )
+
+    connection = (
+        get_connected_instagram_account()
+    )
+
+    instagram_account_id = str(
+        connection[
+            "external_account_id"
+        ]
+    )
+
+    access_token = str(
+        connection[
+            "access_token"
+        ]
+    )
+
+    account_name = (
+        connection.get(
+            "account_name"
+        )
+        or "Instagram"
+    )
+
+    print(
+        f"Publishing to Instagram: "
+        f"{account_name}"
+    )
+
+    print(
+        f"Instagram Account ID: "
+        f"{instagram_account_id}"
+    )
+
+    image_urls = get_property_images(
+        int(property_listing_id),
+        MAX_INSTAGRAM_IMAGES,
+    )
+
+    print(
+        f"Found {len(image_urls)} "
+        f"stored property image(s)."
+    )
+
+    if not image_urls:
+        raise RuntimeError(
+            "Instagram publishing requires "
+            "at least one stored property image."
+        )
+
+    # -----------------------------------------------------
+    # Single-image Instagram post
+    # -----------------------------------------------------
+
+    if len(image_urls) == 1:
+        print(
+            "Creating Instagram "
+            "single-image container..."
+        )
+
+        creation_id = (
+            create_instagram_image_container(
+                instagram_account_id=
+                    instagram_account_id,
+                access_token=
+                    access_token,
+                image_url=
+                    image_urls[0],
+                is_carousel_item=
+                    False,
+            )
+        )
+
+        print(
+            "Waiting for Instagram "
+            "image container..."
+        )
+
+        wait_for_instagram_container(
+            creation_id,
+            access_token,
+        )
+
+        print(
+            "Publishing Instagram post..."
+        )
+
+        media_id = (
+            publish_instagram_container(
+                instagram_account_id=
+                    instagram_account_id,
+                access_token=
+                    access_token,
+                creation_id=
+                    creation_id,
+            )
+        )
+
+        print(
+            f"Instagram post created: "
+            f"{media_id}"
+        )
+
+        return media_id
+
+    # -----------------------------------------------------
+    # Multi-image Instagram carousel
+    # -----------------------------------------------------
+
+    child_ids = []
+
+    for index, image_url in enumerate(
+        image_urls,
+        start=1,
+    ):
+        print(
+            f"Creating Instagram carousel item "
+            f"{index}/{len(image_urls)}..."
+        )
+
+        child_id = (
+            create_instagram_image_container(
+                instagram_account_id=
+                    instagram_account_id,
+                access_token=
+                    access_token,
+                image_url=
+                    image_url,
+                is_carousel_item=
+                    True,
+            )
+        )
+
+        print(
+            f"Waiting for carousel item "
+            f"{index}..."
+        )
+
+        wait_for_instagram_container(
+            child_id,
+            access_token,
+        )
+
+        child_ids.append(
+            child_id
+        )
+
+        print(
+            f"Instagram carousel item "
+            f"{index} ready."
+        )
+
+    print(
+        f"Creating Instagram carousel with "
+        f"{len(child_ids)} image(s)..."
+    )
+
+    carousel_id = (
+        create_instagram_carousel_container(
+            instagram_account_id=
+                instagram_account_id,
+            access_token=
+                access_token,
+            caption=
+                caption,
+            child_ids=
+                child_ids,
+        )
+    )
+
+    print(
+        "Waiting for Instagram "
+        "carousel container..."
+    )
+
+    wait_for_instagram_container(
+        carousel_id,
+        access_token,
+    )
+
+    print(
+        "Publishing Instagram carousel..."
+    )
+
+    media_id = (
+        publish_instagram_container(
+            instagram_account_id=
+                instagram_account_id,
+            access_token=
+                access_token,
+            creation_id=
+                carousel_id,
+        )
+    )
+
+    print(
+        f"Instagram carousel created: "
+        f"{media_id}"
+    )
+
+    return media_id
 
 
 # ---------------------------------------------------------
@@ -794,10 +1281,12 @@ def publish_job(
             job
         )
 
-    if platform in {
-        "instagram",
-        "tiktok",
-    }:
+    if platform == "instagram":
+        return publish_instagram(
+            job
+        )
+
+    if platform == "tiktok":
         return mock_publish(
             job
         )
