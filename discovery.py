@@ -5,6 +5,7 @@ from database import (
     insert_property,
     mark_property_sold,
     refresh_property_images,
+    update_property,
 )
 from events import create_event
 from extractor import extract_property
@@ -258,6 +259,112 @@ def process_new_live_property(
     }
 
 
+def process_relisted_property(
+    supabase,
+    page,
+    property_url,
+    existing,
+):
+    """
+    Restore an existing inactive property when it appears
+    again in one of the live BM Estates search results.
+
+    Sold properties are intentionally excluded from this
+    automatic relisting flow.
+    """
+
+    property_id = existing[
+        "id"
+    ]
+
+    old_status = existing.get(
+        "listing_status"
+    )
+
+    print("")
+    print(
+        "Previously inactive property "
+        "rediscovered:"
+    )
+
+    print(
+        property_url
+    )
+
+    extracted = extract_property(
+        page,
+        property_url,
+    )
+
+    if extracted.get(
+        "currently_live"
+    ) is False:
+        print(
+            "Rediscovered property page "
+            "is not currently live. Skipping."
+        )
+
+        return {
+            "relisted": 0,
+            "events_created": 0,
+            "errors": 0,
+        }
+
+    update_property(
+        supabase,
+        property_id,
+        extracted,
+    )
+
+    refresh_property_images(
+        supabase,
+        property_id,
+        extracted.get(
+            "image_urls"
+        ),
+    )
+
+    new_status = (
+        extracted.get(
+            "listing_status"
+        )
+        or "Live"
+    )
+
+    event_created = create_event(
+        supabase,
+        property_id,
+        {
+            "event_type":
+                "RELISTED",
+
+            "field":
+                "listing_status",
+
+            "old_value":
+                old_status,
+
+            "new_value":
+                new_status,
+        },
+        property_url,
+    )
+
+    print(
+        "Property restored to live "
+        "monitoring."
+    )
+
+    return {
+        "relisted": 1,
+        "events_created":
+            1
+            if event_created
+            else 0,
+        "errors": 0,
+    }
+
+
 def process_sold_property(
     supabase,
     property_url,
@@ -354,6 +461,7 @@ def run_discovery(
     )
 
     new_listings = 0
+    relisted_properties = 0
     sold_properties = 0
     events_created = 0
     errors = 0
@@ -399,6 +507,82 @@ def run_discovery(
                     )
 
                     if existing:
+                        currently_live = (
+                            existing.get(
+                                "currently_live"
+                            )
+                        )
+
+                        listing_status = (
+                            existing.get(
+                                "listing_status"
+                            )
+                            or ""
+                        )
+
+                        is_sold = (
+                            listing_status
+                            .strip()
+                            .lower()
+                            == "sold"
+                        )
+
+                        if currently_live is True:
+                            continue
+
+                        if is_sold:
+                            print("")
+                            print(
+                                "Sold property appeared "
+                                "in live search. "
+                                "Automatic relisting skipped:"
+                            )
+
+                            print(
+                                property_url
+                            )
+
+                            continue
+
+                        try:
+                            result = (
+                                process_relisted_property(
+                                    supabase,
+                                    page,
+                                    property_url,
+                                    existing,
+                                )
+                            )
+
+                            relisted_properties += (
+                                result[
+                                    "relisted"
+                                ]
+                            )
+
+                            events_created += (
+                                result[
+                                    "events_created"
+                                ]
+                            )
+
+                        except Exception as exc:
+                            errors += 1
+
+                            print("")
+                            print(
+                                "Failed to process "
+                                "relisted property:"
+                            )
+
+                            print(
+                                property_url
+                            )
+
+                            print(
+                                f"Error: {exc}"
+                            )
+
                         continue
 
                     try:
@@ -515,6 +699,9 @@ def run_discovery(
         "new_listings":
             new_listings,
 
+        "relisted_properties":
+            relisted_properties,
+
         "sold_properties":
             sold_properties,
 
@@ -533,6 +720,11 @@ def run_discovery(
     print(
         f"New listings: "
         f"{new_listings}"
+    )
+
+    print(
+        f"Relisted properties: "
+        f"{relisted_properties}"
     )
 
     print(
