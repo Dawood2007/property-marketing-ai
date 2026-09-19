@@ -18,7 +18,9 @@ from draft_generator import run_draft_generation
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY"
+)
 
 
 if not SUPABASE_URL:
@@ -26,15 +28,15 @@ if not SUPABASE_URL:
         "SUPABASE_URL is missing from the environment."
     )
 
-if not SUPABASE_KEY:
+if not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError(
-        "SUPABASE_KEY is missing from the environment."
+        "SUPABASE_SERVICE_ROLE_KEY is missing from the environment."
     )
 
 
 supabase: Client = create_client(
     SUPABASE_URL.strip(),
-    SUPABASE_KEY.strip(),
+    SUPABASE_SERVICE_ROLE_KEY.strip(),
 )
 
 
