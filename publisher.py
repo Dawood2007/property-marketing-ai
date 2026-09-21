@@ -1196,6 +1196,11 @@ def publish_instagram(
     )
 
     print(
+        f"Instagram parent carousel ID: "
+        f"{carousel_id}"
+    )
+
+    print(
         "Waiting for Instagram "
         "carousel container..."
     )
