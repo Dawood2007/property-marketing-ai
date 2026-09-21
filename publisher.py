@@ -924,16 +924,76 @@ def wait_for_instagram_container(
     access_token: str,
 ) -> None:
     started_at = time.monotonic()
+    last_status = "UNKNOWN"
+    transient_error_count = 0
 
     while True:
-        status = (
-            get_instagram_container_status(
-                container_id,
-                access_token,
+        try:
+            status = (
+                get_instagram_container_status(
+                    container_id,
+                    access_token,
+                )
             )
-        )
+
+            last_status = status
+
+        except RuntimeError as exc:
+            error_message = str(exc)
+
+            is_transient_container_lookup_error = (
+                "Unsupported get request"
+                in error_message
+                and "code 100"
+                in error_message
+                and "subcode 33"
+                in error_message
+            )
+
+            if not is_transient_container_lookup_error:
+                raise
+
+            transient_error_count += 1
+
+            elapsed = (
+                time.monotonic()
+                - started_at
+            )
+
+            if (
+                elapsed
+                >= INSTAGRAM_CONTAINER_TIMEOUT_SECONDS
+            ):
+                raise RuntimeError(
+                    "Timed out waiting for Instagram "
+                    f"media container {container_id}. "
+                    "Meta repeatedly returned "
+                    "code 100, subcode 33."
+                ) from exc
+
+            print(
+                "Instagram container is not readable "
+                "yet (Meta code 100/subcode 33). "
+                f"Retrying in "
+                f"{INSTAGRAM_CONTAINER_POLL_SECONDS} "
+                "seconds..."
+            )
+
+            time.sleep(
+                INSTAGRAM_CONTAINER_POLL_SECONDS
+            )
+
+            continue
 
         if status == "FINISHED":
+            if transient_error_count:
+                print(
+                    "Instagram container became "
+                    "available after "
+                    f"{transient_error_count} "
+                    "temporary lookup error(s)."
+                )
+
             return
 
         if status in {
@@ -958,7 +1018,7 @@ def wait_for_instagram_container(
             raise RuntimeError(
                 "Timed out waiting for Instagram "
                 f"media container {container_id}. "
-                f"Last status: {status}."
+                f"Last status: {last_status}."
             )
 
         time.sleep(
