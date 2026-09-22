@@ -531,6 +531,16 @@ def refresh_property_images(
 
     image_urls = image_urls or []
 
+    # Safety guard: a live property returning zero images is suspicious.
+    # Preserve any existing image records rather than treating an empty
+    # extraction as authoritative and deleting known-good image references.
+    if not image_urls:
+        print(
+            f"Warning: No images extracted for property {property_id}. "
+            "Existing property images will be preserved."
+        )
+        return
+
     existing_images = (
         get_existing_property_images(
             supabase,

@@ -738,28 +738,10 @@ def publish_facebook(
     )
 
     if not image_urls:
-        print(
-            "No stored property images found."
+        raise RuntimeError(
+            "Facebook publishing requires "
+            "at least one stored property image."
         )
-
-        print(
-            "Publishing text-only Facebook post."
-        )
-
-        external_post_id = (
-            create_facebook_text_post(
-                page_id=page_id,
-                access_token=access_token,
-                message=message,
-            )
-        )
-
-        print(
-            f"Facebook post created: "
-            f"{external_post_id}"
-        )
-
-        return external_post_id
 
     photo_ids = []
 
