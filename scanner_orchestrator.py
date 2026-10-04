@@ -9,6 +9,7 @@ from supabase import Client, create_client
 from discovery import run_discovery
 from scanner_v4 import run_scanner_v4
 from draft_generator import run_draft_generation
+from template_renderer import render_and_store_marketing_asset
 
 
 # ---------------------------------------------------------
@@ -377,6 +378,96 @@ def save_successful_run(
 
 
 # ---------------------------------------------------------
+# Marketing asset generation
+# ---------------------------------------------------------
+
+def run_marketing_asset_generation(
+    supabase: Client,
+) -> dict:
+    """
+    Generate missing social graphics for NEW_LISTING events only.
+
+    This phase is intentionally independent of AI draft generation so
+    marketing graphics can still be created when draft generation is disabled.
+    Existing marketing_assets rows are skipped to keep the phase idempotent.
+    """
+
+    result = {
+        "assets_created": 0,
+        "events_skipped": 0,
+        "events_failed": 0,
+    }
+
+    events_response = (
+        supabase
+        .table("listing_events")
+        .select("id,property_listing_id,event_type,marketing_asset_processed")
+        .eq("event_type", "NEW_LISTING")
+        .eq("marketing_asset_processed", False)
+        .order("created_at")
+        .execute()
+    )
+
+    for event in events_response.data or []:
+        event_id = event.get("id")
+        property_id = event.get("property_listing_id")
+
+        if not event_id or not property_id:
+            result["events_failed"] += 1
+            print(
+                "Warning: NEW_LISTING event is missing an "
+                "event ID or property ID."
+            )
+            continue
+
+        existing_response = (
+            supabase
+            .table("marketing_assets")
+            .select("id")
+            .eq("listing_event_id", event_id)
+            .eq("asset_type", "SOCIAL_GRAPHIC")
+            .limit(1)
+            .execute()
+        )
+
+        if existing_response.data:
+            result["events_skipped"] += 1
+            continue
+
+        try:
+            render_and_store_marketing_asset(
+                property_id=int(property_id),
+                event_type="NEW_LISTING",
+                listing_event_id=int(event_id),
+            )
+
+            processed_response = (
+                supabase
+                .table("listing_events")
+                .update({"marketing_asset_processed": True})
+                .eq("id", event_id)
+                .execute()
+            )
+            if not processed_response.data:
+                raise RuntimeError(
+                    f"Event {event_id} marketing asset was generated but could not be marked as processed."
+                )
+
+            result["assets_created"] += 1
+
+        except Exception as asset_error:
+            result["events_failed"] += 1
+            print("")
+            print(
+                f"Warning: Marketing asset generation failed "
+                f"for event {event_id} / property {property_id}."
+            )
+            print(f"Asset generation error: {asset_error}")
+
+    return result
+
+
+# ---------------------------------------------------------
 # Main scanner orchestrator
 # ---------------------------------------------------------
 
@@ -541,7 +632,7 @@ def run_scanner(
         )
 
         # -------------------------------------------------
-        # Phase 3 — marketing draft generation
+        # Phase 3 — marketing asset generation
         # -------------------------------------------------
 
         print("")
@@ -549,7 +640,63 @@ def run_scanner(
             "========================================"
         )
         print(
-            "PHASE 3: MARKETING DRAFT GENERATION"
+            "PHASE 3: MARKETING ASSET GENERATION"
+        )
+        print(
+            "========================================"
+        )
+
+        asset_result = {
+            "assets_created": 0,
+            "events_skipped": 0,
+            "events_failed": 0,
+        }
+
+        try:
+            asset_result = (
+                run_marketing_asset_generation(
+                    supabase=supabase,
+                )
+            )
+
+        except Exception as asset_error:
+            print("")
+            print(
+                "Warning: Marketing asset "
+                "generation phase failed."
+            )
+            print(
+                f"Asset generation error: "
+                f"{asset_error}"
+            )
+
+        print("")
+        print(
+            "Marketing asset phase complete."
+        )
+        print(
+            f"Assets created: "
+            f"{asset_result.get('assets_created', 0)}"
+        )
+        print(
+            f"Asset events skipped: "
+            f"{asset_result.get('events_skipped', 0)}"
+        )
+        print(
+            f"Asset events failed: "
+            f"{asset_result.get('events_failed', 0)}"
+        )
+
+        # -------------------------------------------------
+        # Phase 4 — marketing draft generation
+        # -------------------------------------------------
+
+        print("")
+        print(
+            "========================================"
+        )
+        print(
+            "PHASE 4: MARKETING DRAFT GENERATION"
         )
         print(
             "========================================"
@@ -697,6 +844,16 @@ def run_scanner(
         print(
             f"Events created: "
             f"{result.get('events_created', 0)}"
+        )
+
+        print(
+            f"Marketing assets created: "
+            f"{asset_result.get('assets_created', 0)}"
+        )
+
+        print(
+            f"Marketing asset events failed: "
+            f"{asset_result.get('events_failed', 0)}"
         )
 
         print(
