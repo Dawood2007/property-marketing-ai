@@ -385,7 +385,7 @@ def run_marketing_asset_generation(
     supabase: Client,
 ) -> dict:
     """
-    Generate missing social graphics for NEW_LISTING events only.
+    Generate missing social graphics for NEW_LISTING, PRICE_REDUCED and RELISTED events.
 
     This phase is intentionally independent of AI draft generation so
     marketing graphics can still be created when draft generation is disabled.
@@ -402,7 +402,7 @@ def run_marketing_asset_generation(
         supabase
         .table("listing_events")
         .select("id,property_listing_id,event_type,marketing_asset_processed")
-        .eq("event_type", "NEW_LISTING")
+        .in_("event_type", ["NEW_LISTING", "PRICE_REDUCED", "RELISTED"])
         .eq("marketing_asset_processed", False)
         .order("created_at")
         .execute()
@@ -411,11 +411,12 @@ def run_marketing_asset_generation(
     for event in events_response.data or []:
         event_id = event.get("id")
         property_id = event.get("property_listing_id")
+        event_type = event.get("event_type")
 
         if not event_id or not property_id:
             result["events_failed"] += 1
             print(
-                "Warning: NEW_LISTING event is missing an "
+                f"Warning: {event_type} event is missing an "
                 "event ID or property ID."
             )
             continue
@@ -431,13 +432,18 @@ def run_marketing_asset_generation(
         )
 
         if existing_response.data:
+            # The asset already exists; reconcile the processing flag so the
+            # event does not remain in the pending queue on every scan.
+            supabase.table("listing_events").update(
+                {"marketing_asset_processed": True}
+            ).eq("id", event_id).execute()
             result["events_skipped"] += 1
             continue
 
         try:
             render_and_store_marketing_asset(
                 property_id=int(property_id),
-                event_type="NEW_LISTING",
+                event_type=event_type,
                 listing_event_id=int(event_id),
             )
 

@@ -109,7 +109,19 @@ def location_text(p):
 
     return road, area
 
-def render_just_listed_01(property_id, agency, output_path=None):
+def event_badge_text(event_type):
+    labels = {
+        "NEW_LISTING": "JUST LISTED",
+        "PRICE_REDUCED": "PRICE REDUCED",
+        "RELISTED": "BACK ON MARKET",
+    }
+    return labels.get(
+        str(event_type or "").upper(),
+        str(event_type or "").replace("_", " ").upper()
+    )
+
+
+def render_just_listed_01(property_id, agency, output_path=None, event_type="NEW_LISTING"):
     p=load_property(property_id)
     urls=load_images(property_id)
     a=agency
@@ -137,9 +149,10 @@ def render_just_listed_01(property_id, agency, output_path=None):
     bw,bh=430,88
     bl=(W-bw)//2; bt=PANEL_Y-44
     d.rounded_rectangle((bl,bt,bl+bw,bt+bh),radius=18,fill=secondary)
-    bf=fit_font(d,"JUST LISTED",bw-50,52,36,True)
-    b=d.textbbox((0,0),"JUST LISTED",font=bf)
-    d.text(((W-(b[2]-b[0]))/2,bt+(bh-(b[3]-b[1]))/2-b[1]),"JUST LISTED",font=bf,fill=WHITE)
+    badge=event_badge_text(event_type)
+    bf=fit_font(d,badge,bw-50,52,30,True)
+    b=d.textbbox((0,0),badge,font=bf)
+    d.text(((W-(b[2]-b[0]))/2,bt+(bh-(b[3]-b[1]))/2-b[1]),badge,font=bf,fill=WHITE)
 
     line1,line2=location_text(p)
     price=format_price(p.get("price"),p.get("listing_type"))
@@ -169,7 +182,7 @@ def render_just_listed_01(property_id, agency, output_path=None):
 
 
 
-def render_just_listed_02(property_id, agency, output_path=None):
+def render_just_listed_02(property_id, agency, output_path=None, event_type="NEW_LISTING"):
     """Full-photo Just Listed template with clean header and bottom overlay."""
     p=load_property(property_id); urls=load_images(property_id); a=agency
     if not urls:
@@ -183,11 +196,12 @@ def render_just_listed_02(property_id, agency, output_path=None):
     m=62
     header_h=190
 
-    badge="JUST LISTED"
+    badge=event_badge_text(event_type)
     bw,bh=310,92
     by=50
     d.rounded_rectangle((m,by,m+bw,by+bh),radius=18,fill=primary)
-    bf=get_font(38,True)
+    # Fit longer status labels inside the existing badge without altering its layout.
+    bf=fit_font(d,badge,bw-48,38,24,True)
     bb=d.textbbox((0,0),badge,font=bf)
     d.text(
         (m+(bw-(bb[2]-bb[0]))/2, by+(bh-(bb[3]-bb[1]))/2-bb[1]),
@@ -290,7 +304,7 @@ def render_just_listed_02(property_id, agency, output_path=None):
     return output_path
 
 
-def render_just_listed_03(property_id, agency, output_path=None):
+def render_just_listed_03(property_id, agency, output_path=None, event_type="NEW_LISTING"):
     """Blue-tinted full-photo Just Listed template."""
     p=load_property(property_id); urls=load_images(property_id); a=agency
     if not urls:
@@ -304,11 +318,12 @@ def render_just_listed_03(property_id, agency, output_path=None):
     m=62
     header_h=190
 
-    badge="JUST LISTED"
+    badge=event_badge_text(event_type)
     bw,bh=310,92
     by=50
     d.rounded_rectangle((m,by,m+bw,by+bh),radius=18,fill=primary)
-    bf=get_font(38,True)
+    # Fit longer status labels inside the existing badge without altering its layout.
+    bf=fit_font(d,badge,bw-48,38,24,True)
     bb=d.textbbox((0,0),badge,font=bf)
     d.text(
         (m+(bw-(bb[2]-bb[0]))/2, by+(bh-(bb[3]-bb[1]))/2-bb[1]),
@@ -489,7 +504,7 @@ def render_and_store_marketing_asset(property_id, listing_event_id, event_type):
 
     output_path = f"marketing_asset_event_{listing_event_id}.png"
     print(f"Selected template: {template_key}")
-    renderer(property_id=property_id, agency=agency, output_path=output_path)
+    renderer(property_id=property_id, agency=agency, output_path=output_path, event_type=event_type)
 
     try:
         return upload_marketing_asset(
@@ -520,6 +535,12 @@ TEMPLATE_RENDERERS = {
     ("NEW_LISTING", "just_listed_01"): render_just_listed_01,
     ("NEW_LISTING", "just_listed_02"): render_just_listed_02,
     ("NEW_LISTING", "just_listed_03"): render_just_listed_03,
+    ("PRICE_REDUCED", "just_listed_01"): render_just_listed_01,
+    ("PRICE_REDUCED", "just_listed_02"): render_just_listed_02,
+    ("PRICE_REDUCED", "just_listed_03"): render_just_listed_03,
+    ("RELISTED", "just_listed_01"): render_just_listed_01,
+    ("RELISTED", "just_listed_02"): render_just_listed_02,
+    ("RELISTED", "just_listed_03"): render_just_listed_03,
 }
 
 
@@ -538,7 +559,7 @@ def render_template(property_id, event_type, output_path=None):
         )
 
     print(f"Selected template: {template_key}")
-    return renderer(property_id=property_id, agency=agency, output_path=output_path)
+    return renderer(property_id=property_id, agency=agency, output_path=output_path, event_type=event_type)
 
 
 if __name__=="__main__":
